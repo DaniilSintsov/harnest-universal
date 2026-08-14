@@ -2,226 +2,124 @@ package wizard
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/agents"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	agents_pkg "github.com/daniilsintsov/harnest-universal/internal/agents"
+	"github.com/daniilsintsov/harnest-universal/internal/mapping"
 )
 
-const maxShow = 5
+// Run lets the user accept, skip, search, or replace each suggested agent.
+func Run(in io.Reader, out io.Writer, structure mapping.AgentStructure, suggestions mapping.Suggestions, discovered []string) (mapping.AgentConfig, error) {
+	reader := bufio.NewReader(in)
+	agents, known := uniqueAgents(discovered)
+	config := mapping.AgentConfig{Models: copyMap(suggestions.ModelTiers)}
 
-func Run(r io.Reader, structure mapping.AgentStructure, suggestions mapping.Suggestions, available []string) mapping.AgentConfig {
-	scanner := bufio.NewScanner(r)
-	config := mapping.AgentConfig{
-		Models: make(map[string]string),
-	}
-
-	fmt.Println("\n── Agent Wizard ──")
-	fmt.Printf("Found %d agents on this machine\n", len(available))
-	fmt.Println("Enter = accept suggestion, s = skip, ? = search")
-	fmt.Println()
+	fmt.Fprintf(out, "\n── Agent Wizard ──\nFound %d compatible agents\nEnter = accept suggestion, s = skip, ? = search\n", len(agents))
 
 	for _, role := range structure.Roles {
-		suggestion := suggestions.Consilium[role]
-		agent := pickAgent(scanner, fmt.Sprintf("Consilium: %s", role), suggestion, available)
+		agent, err := promptAgent(reader, out, "Consilium: "+role, suggestions.Consilium[role], agents, known)
+		if err != nil {
+			return mapping.AgentConfig{}, err
+		}
 		if agent != "" {
-			config.Consilium = append(config.Consilium, mapping.ConsiliumRole{
-				Role:  role,
-				Agent: agent,
-			})
-			// Pick model tier
-			tierSuggestion := suggestions.ModelTiers[role]
-			if tierSuggestion == "" {
-				tierSuggestion = "medium"
-			}
-			tier := pickTier(scanner, role, tierSuggestion)
-			config.Models[role] = tier
+			config.Consilium = append(config.Consilium, mapping.ConsiliumRole{Role: role, Agent: agent})
 		}
 	}
 
-	if len(structure.ExecScopes) > 0 {
-		fmt.Println()
-	}
-	for _, es := range structure.ExecScopes {
-		suggestion := suggestions.Exec[es.StackName]
-		agent := pickAgent(scanner, fmt.Sprintf("Exec: %s → %s", es.StackName, es.Scope), suggestion, available)
+	for _, scope := range structure.ExecScopes {
+		agent, err := promptAgent(reader, out, "Exec: "+scope.Scope, suggestions.Exec[scope.StackName], agents, known)
+		if err != nil {
+			return mapping.AgentConfig{}, err
+		}
 		if agent != "" {
-			config.Exec = append(config.Exec, mapping.ExecAgent{
-				Agent: agent,
-				Scope: es.Scope,
-			})
+			config.Exec = append(config.Exec, mapping.ExecAgent{Agent: agent, Scope: scope.Scope})
 		}
 	}
 
-	fmt.Println()
-	return config
+	return config, nil
 }
 
-func pickAgent(scanner *bufio.Scanner, label, suggestion string, available []string) string {
-	fmt.Printf("[%s]\n", label)
-	if suggestion != "" {
-		fmt.Printf("  Suggestion: %s\n", suggestion)
-		fmt.Print("  Enter=accept, s=skip, ?=search: ")
-	} else {
-		fmt.Print("  s=skip, ?=search: ")
+func promptAgent(reader *bufio.Reader, out io.Writer, label, suggestion string, agents []string, known map[string]bool) (string, error) {
+	display := suggestion
+	if display == "" {
+		display = "(none)"
 	}
-
-	if !scanner.Scan() {
-		return suggestion
-	}
-	input := strings.TrimSpace(scanner.Text())
-
-	switch {
-	case input == "s":
-		return ""
-	case input == "" && suggestion != "":
-		return suggestion
-	case input == "?":
-		return searchLoop(scanner, available)
-	default:
-		for _, a := range available {
-			if a == input {
-				return input
-			}
-		}
-		fmt.Printf("  '%s' not found locally. Use anyway? (y/n): ", input)
-		if scanner.Scan() && strings.TrimSpace(scanner.Text()) == "y" {
-			return input
-		}
-		return ""
-	}
-}
-
-func searchLoop(scanner *bufio.Scanner, available []string) string {
-	fmt.Print("  Type to filter: ")
+	fmt.Fprintf(out, "\n[%s]\n  Suggestion: %s\n", label, display)
 
 	for {
-		if !scanner.Scan() {
-			return ""
-		}
-		input := strings.TrimSpace(scanner.Text())
-
-		if input == "" {
-			return "" // cancel
+		fmt.Fprint(out, "  Enter=accept, s=skip, ?=search: ")
+		answer, err := readLine(reader)
+		if err != nil {
+			return "", err
 		}
 
-		// Try as number from last shown results
-		results := agents.Search(available, "")
-		// We need to re-filter with whatever was shown last
-		// But since we don't track state, treat input as search query first
-
-		// Check exact match
-		for _, a := range available {
-			if a == input {
-				fmt.Printf("  → %s\n", a)
-				return a
+		switch strings.ToLower(answer) {
+		case "":
+			return suggestion, nil
+		case "s":
+			return "", nil
+		case "?":
+			fmt.Fprint(out, "  Search: ")
+			query, err := readLine(reader)
+			if err != nil {
+				return "", err
 			}
-		}
-
-		// Filter
-		results = agents.Search(available, input)
-
-		if len(results) == 0 {
-			fmt.Printf("  No match for '%s'\n", input)
-			fmt.Print("  Try again or Enter to cancel: ")
+			matches := agents_pkg.Search(agents, query)
+			if len(matches) == 0 {
+				fmt.Fprintln(out, "  No matching agents.")
+			} else {
+				for _, match := range matches {
+					fmt.Fprintln(out, "  - "+match)
+				}
+			}
 			continue
 		}
 
-		// Show filtered results — always, even if 1 match
-		showResults(results, input)
-		if len(results) == 1 {
-			fmt.Print("  Enter=accept, or refine: ")
-		} else {
-			fmt.Print("  Pick #, refine, or Enter to cancel: ")
+		if known[answer] || answer == suggestion {
+			return answer, nil
 		}
-
-		if !scanner.Scan() {
-			return ""
+		fmt.Fprintf(out, "  Agent %q not found locally. Use anyway? [y/N]: ", answer)
+		confirm, err := readLine(reader)
+		if err != nil {
+			return "", err
 		}
-		pick := strings.TrimSpace(scanner.Text())
-
-		if pick == "" {
-			if len(results) == 1 {
-				fmt.Printf("  → %s\n", results[0])
-				return results[0]
-			}
-			return ""
-		}
-
-		// Try as number
-		idx := 0
-		show := results
-		if len(show) > maxShow {
-			show = show[:maxShow]
-		}
-		if _, err := fmt.Sscanf(pick, "%d", &idx); err == nil && idx >= 1 && idx <= len(show) {
-			fmt.Printf("  → %s\n", show[idx-1])
-			return show[idx-1]
-		}
-
-		// Exact match
-		for _, a := range available {
-			if a == pick {
-				fmt.Printf("  → %s\n", a)
-				return a
-			}
-		}
-
-		// Treat as refined search
-		results = agents.Search(available, pick)
-		if len(results) == 0 {
-			fmt.Printf("  No match for '%s'\n", pick)
-			fmt.Print("  Try again or Enter to cancel: ")
-			continue
-		}
-
-		showResults(results, pick)
-		if len(results) == 1 {
-			fmt.Print("  Enter=accept, or refine: ")
-		} else {
-			fmt.Print("  Pick #, refine, or Enter to cancel: ")
+		if strings.EqualFold(confirm, "y") || strings.EqualFold(confirm, "yes") {
+			return answer, nil
 		}
 	}
 }
 
-func pickTier(scanner *bufio.Scanner, role, suggestion string) string {
-	fmt.Printf("  Model tier: %s  (h=high, m=medium, l=low, Enter=accept)\n", suggestion)
-	fmt.Print("  > ")
-
-	if !scanner.Scan() {
-		return suggestion
+func readLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", fmt.Errorf("read interactive input: %w", err)
 	}
-	input := strings.TrimSpace(scanner.Text())
-
-	switch strings.ToLower(input) {
-	case "":
-		return suggestion
-	case "h", "high":
-		return "high"
-	case "m", "medium":
-		return "medium"
-	case "l", "low":
-		return "low"
-	default:
-		fmt.Printf("  Unknown tier '%s', using %s\n", input, suggestion)
-		return suggestion
-	}
+	return strings.TrimSpace(line), nil
 }
 
-func showResults(items []string, query string) {
-	show := items
-	if len(show) > maxShow {
-		show = show[:maxShow]
+func uniqueAgents(discovered []string) ([]string, map[string]bool) {
+	known := make(map[string]bool, len(discovered))
+	for _, agent := range discovered {
+		if agent != "" {
+			known[agent] = true
+		}
 	}
-	if query != "" {
-		fmt.Printf("  '%s' → %d matches:\n", query, len(items))
+	agents := make([]string, 0, len(known))
+	for agent := range known {
+		agents = append(agents, agent)
 	}
-	for i, a := range show {
-		fmt.Printf("    %d) %s\n", i+1, a)
+	sort.Strings(agents)
+	return agents, known
+}
+
+func copyMap(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
 	}
-	if len(items) > maxShow {
-		fmt.Printf("    ... +%d more\n", len(items)-maxShow)
-	}
+	return result
 }

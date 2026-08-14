@@ -7,8 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
 )
 
 type OpenCodeGenerator struct{}
@@ -23,7 +22,8 @@ type openCodeAgent struct {
 	Model       string `json:"model,omitempty"`
 }
 
-func (g *OpenCodeGenerator) Generate(projectDir string, stacks []detector.Stack, agents mapping.AgentConfig) (string, error) {
+func (g *OpenCodeGenerator) Generate(projectDir string, project ir.Project) (string, error) {
+	stacks, agents := project.Stacks, project.Agents
 	// 1. Generate opencode.json with agent declarations
 	cfg := openCodeConfig{
 		Agent: make(map[string]openCodeAgent),
@@ -38,7 +38,10 @@ func (g *OpenCodeGenerator) Generate(projectDir string, stacks []detector.Stack,
 			Description: fmt.Sprintf("%s — %s", describeRole(c.Role), c.Agent),
 		}
 		if tier, ok := agents.Models[c.Role]; ok {
-			agent.Model = ResolveTier("opencode", tier)
+			agent.Model = tier
+			if model := project.Adapters["opencode"].Models[tier]; model != "" {
+				agent.Model = model
+			}
 		}
 		cfg.Agent[c.Role] = agent
 	}

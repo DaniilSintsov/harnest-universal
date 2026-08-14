@@ -2,6 +2,7 @@ package profile
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,16 +10,55 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
 )
 
 var builtinProfiles = map[string]string{
 	"business-feature": businessFeature,
 	"bug-hunting":      bugHunting,
+	"code-review":      codeReview,
+	"coordinator":      coordinator,
+	"e2e-testing":      e2eTesting,
+	"redesign":         redesign,
 	"research":         research,
 	"refactoring":      refactoring,
-	"e2e-testing":      e2eTesting,
-	"e2e-authoring":    e2eAuthoring,
+	"strat-session":    stratSession,
+	"task-creation":    taskCreation,
 }
+
+var codexProfileReplacer = strings.NewReplacer(
+	"~/.claude/projects/-Users-neuradev/memory/coordinator/", "~/.codex/coordinator/",
+	"~/.claude/projects/-Users-<user>/memory/…", "~/.codex/memory/…",
+	"~/.claude/", "~/.codex/",
+	"CLAUDE.md", "AGENTS.md",
+	"`AskUserQuestion`", "`request_user_input` (если доступен) или прямой вопрос пользователю",
+	"AskUserQuestion", "request_user_input",
+	"Task tool", "Codex subagent workflow",
+	"Read tool", "file-reading tools",
+	"playwright-cli", "browser tooling",
+	"Bash", "shell",
+	"`Explore`", "`explorer`",
+	"Explore", "explorer",
+	"`general-purpose`", "`default`",
+	"general-purpose", "default",
+	"через `/loop`", "через recurring automation",
+	"skill `/deploy`", "доступный deployment skill",
+	"/test-android", "доступный Android test skill",
+	"/test-ios", "доступный iOS test skill",
+	"/test-desktop", "доступный Desktop test skill",
+	"voltagent-biz:", "",
+	"voltagent-core-dev:", "",
+	"voltagent-infra:", "",
+	"voltagent-dev-exp:", "",
+	"voltagent-lang:", "",
+	"voltagent-плагины", "Codex agents",
+	"builder-spring-feature", "spring-boot-engineer",
+	"kotlin-multiplatform-developer", "kotlin-specialist",
+	"opus", "sol",
+	"sonnet", "terra",
+	"haiku", "luna",
+)
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
@@ -30,21 +70,36 @@ func ValidateName(name string) error {
 }
 
 func profilesDir() (string, error) {
+	baseDir, err := defaultBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return profilesDirIn(baseDir), nil
+}
+
+func defaultBaseDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return filepath.Join(home, ".claude", "profiles"), nil
+	return filepath.Join(home, ".claude"), nil
 }
 
+func profilesDirIn(baseDir string) string { return filepath.Join(baseDir, "profiles") }
+
 func safePath(name string) (string, error) {
-	if err := ValidateName(name); err != nil {
-		return "", err
-	}
-	dir, err := profilesDir()
+	baseDir, err := defaultBaseDir()
 	if err != nil {
 		return "", err
 	}
+	return safePathIn(name, baseDir)
+}
+
+func safePathIn(name, baseDir string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	dir := profilesDirIn(baseDir)
 	path := filepath.Join(dir, name+".md")
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -78,8 +133,23 @@ func IsBuiltin(name string) bool {
 
 // BuiltinContent returns builtin profile content.
 func BuiltinContent(name string) (string, bool) {
+	return BuiltinContentFor(name, "claude-code")
+}
+
+// BuiltinContentFor returns builtin content adapted for a target harness.
+func BuiltinContentFor(name, harnessName string) (string, bool) {
 	content, ok := builtinProfiles[name]
-	return content, ok
+	if !ok {
+		return "", false
+	}
+	return adaptContentFor(content, harnessName), true
+}
+
+func adaptContentFor(content, harnessName string) string {
+	if harnessName == "codex" {
+		return codexProfileReplacer.Replace(content)
+	}
+	return content
 }
 
 func List() ([]string, error) {
@@ -87,6 +157,15 @@ func List() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return listDir(dir)
+}
+
+// ListIn lists profiles installed under a harness global directory.
+func ListIn(baseDir string) ([]string, error) {
+	return listDir(profilesDirIn(baseDir))
+}
+
+func listDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -106,36 +185,21 @@ func List() ([]string, error) {
 
 // Install writes a builtin profile to disk.
 func Install(name string) error {
-	content, ok := builtinProfiles[name]
-	if !ok {
-		return fmt.Errorf("unknown builtin profile: %s", name)
-	}
-
-	dir, err := profilesDir()
+	baseDir, err := defaultBaseDir()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("creating profiles dir: %w", err)
-	}
-
-	path := filepath.Join(dir, name+".md")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
-		return fmt.Errorf("writing profile: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming profile: %w", err)
-	}
-
-	fmt.Printf("  → %s\n", path)
-	return nil
+	return InstallToFor(name, baseDir, "claude-code")
 }
 
 // InstallTo writes a builtin profile to a custom base directory (baseDir/profiles/).
 func InstallTo(name, baseDir string) error {
-	content, ok := builtinProfiles[name]
+	return InstallToFor(name, baseDir, "claude-code")
+}
+
+// InstallToFor writes a target-adapted builtin profile to baseDir/profiles/.
+func InstallToFor(name, baseDir, harnessName string) error {
+	content, ok := BuiltinContentFor(name, harnessName)
 	if !ok {
 		return fmt.Errorf("unknown builtin profile: %s", name)
 	}
@@ -161,7 +225,12 @@ func InstallTo(name, baseDir string) error {
 
 // IsModifiedIn checks if an installed builtin profile in a custom dir differs from its template.
 func IsModifiedIn(name, baseDir string) (bool, error) {
-	builtin, ok := builtinProfiles[name]
+	return IsModifiedInFor(name, baseDir, "claude-code")
+}
+
+// IsModifiedInFor compares an installed profile with its target-adapted template.
+func IsModifiedInFor(name, baseDir, harnessName string) (bool, error) {
+	builtin, ok := BuiltinContentFor(name, harnessName)
 	if !ok {
 		return false, nil
 	}
@@ -176,24 +245,110 @@ func IsModifiedIn(name, baseDir string) (bool, error) {
 	return string(data) != builtin, nil
 }
 
-// IsModified checks if an installed builtin profile differs from its template.
-func IsModified(name string) (bool, error) {
-	builtin, ok := builtinProfiles[name]
-	if !ok {
-		return false, nil
-	}
-	path, err := safePath(name)
+// MigrateInFor adapts an installed profile in place while preserving its source.
+func MigrateInFor(name, baseDir, harnessName string) (bool, string, error) {
+	path, err := safePathIn(name, baseDir)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return false, "", nil
 		}
+		return false, "", err
+	}
+
+	migrated := adaptContentFor(string(data), harnessName)
+	if migrated == string(data) {
+		return false, "", nil
+	}
+
+	backupPath := path + ".pre-" + harnessName + ".bak"
+	if err := writeBackupOnce(backupPath, data); err != nil {
+		return false, "", fmt.Errorf("creating migration backup: %w", err)
+	}
+	if err := managedfile.WriteAtomic(path, []byte(migrated), 0600); err != nil {
+		return false, "", fmt.Errorf("migrating profile: %w", err)
+	}
+	return true, backupPath, nil
+}
+
+// IsModified checks if an installed builtin profile differs from its template.
+func IsModified(name string) (bool, error) {
+	baseDir, err := defaultBaseDir()
+	if err != nil {
 		return false, err
 	}
-	return string(data) != builtin, nil
+	return IsModifiedInFor(name, baseDir, "claude-code")
+}
+
+// RepairBuiltinMeta inserts the builtin ## Meta block into a modified profile
+// while preserving the profile body and creating a recoverable backup.
+func RepairBuiltinMeta(name string) (bool, string, error) {
+	baseDir, err := defaultBaseDir()
+	if err != nil {
+		return false, "", err
+	}
+	return RepairBuiltinMetaInFor(name, baseDir, "claude-code")
+}
+
+// RepairBuiltinMetaIn inserts the builtin ## Meta block into a modified profile
+// in a custom harness base directory. No-op when Meta already exists.
+func RepairBuiltinMetaIn(name, baseDir string) (bool, string, error) {
+	return RepairBuiltinMetaInFor(name, baseDir, "claude-code")
+}
+
+// RepairBuiltinMetaInFor inserts target-adapted builtin Meta into a modified profile.
+func RepairBuiltinMetaInFor(name, baseDir, harnessName string) (bool, string, error) {
+	builtin, ok := BuiltinContentFor(name, harnessName)
+	if !ok {
+		return false, "", fmt.Errorf("unknown builtin profile: %s", name)
+	}
+
+	path := filepath.Join(baseDir, "profiles", name+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	if hasMarkdownHeading(string(data), "## Meta") {
+		return false, "", nil
+	}
+
+	metaBlock, err := extractBuiltinMetaBlock(builtin)
+	if err != nil {
+		return false, "", err
+	}
+	repaired, ok := insertMetaAfterTitle(string(data), metaBlock)
+	if !ok || repaired == string(data) {
+		return false, "", nil
+	}
+
+	backupPath := path + ".bak"
+	if err := writeBackupOnce(backupPath, data); err != nil {
+		return false, "", fmt.Errorf("creating backup: %w", err)
+	}
+	if err := managedfile.WriteAtomic(path, []byte(repaired), 0600); err != nil {
+		return false, "", fmt.Errorf("repairing profile: %w", err)
+	}
+	return true, backupPath, nil
+}
+
+func writeBackupOnce(path string, data []byte) error {
+	existing, err := os.ReadFile(path)
+	if err == nil {
+		if bytes.Equal(existing, data) {
+			return nil
+		}
+		return fmt.Errorf("backup already exists with different content: %s", path)
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	return managedfile.WriteAtomic(path, data, 0600)
 }
 
 // Remove deletes a profile from disk.
@@ -202,6 +357,19 @@ func Remove(name string) error {
 	if err != nil {
 		return err
 	}
+	return removePath(name, path)
+}
+
+// RemoveIn deletes a profile from a harness global directory.
+func RemoveIn(name, baseDir string) error {
+	path, err := safePathIn(name, baseDir)
+	if err != nil {
+		return err
+	}
+	return removePath(name, path)
+}
+
+func removePath(name, path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("profile not found: %s", name)
 	}
@@ -214,6 +382,19 @@ func Edit(name string) error {
 	if err != nil {
 		return err
 	}
+	return editPath(name, path)
+}
+
+// EditIn opens a profile from a harness global directory in $EDITOR.
+func EditIn(name, baseDir string) error {
+	path, err := safePathIn(name, baseDir)
+	if err != nil {
+		return err
+	}
+	return editPath(name, path)
+}
+
+func editPath(name, path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("profile not found: %s", name)
 	}
@@ -234,10 +415,19 @@ func Edit(name string) error {
 
 // Create runs an interactive wizard to create a custom profile.
 func Create(name string, r *bufio.Reader) error {
+	baseDir, err := defaultBaseDir()
+	if err != nil {
+		return err
+	}
+	return CreateIn(name, baseDir, r)
+}
+
+// CreateIn runs the profile wizard for a harness global directory.
+func CreateIn(name, baseDir string, r *bufio.Reader) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	path, err := safePath(name)
+	path, err := safePathIn(name, baseDir)
 	if err != nil {
 		return err
 	}
@@ -333,10 +523,7 @@ func Create(name string, r *bufio.Reader) error {
 
 	content := renderProfile(name, keywords, description, stages)
 
-	dir, err := profilesDir()
-	if err != nil {
-		return err
-	}
+	dir := profilesDirIn(baseDir)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating profiles dir: %w", err)
 	}
@@ -478,15 +665,15 @@ func stageDescription(s stage) string {
 func stageAgentInfo(s stage) (string, string) {
 	switch s.AgentType {
 	case "consilium":
-		return "CONSILIUM (see below)", "opus"
+		return "CONSILIUM (see below)", "high"
 	case "bash":
-		return "Bash", "sonnet"
+		return "Bash", "medium"
 	case "single":
-		return s.Role, "opus"
+		return s.Role, "high"
 	case "none":
 		return "—", "—"
 	default:
-		return s.AgentType, "opus"
+		return s.AgentType, "high"
 	}
 }
 
@@ -508,4 +695,69 @@ func promptChoice(r *bufio.Reader, label string, options []string) string {
 		}
 		fmt.Printf("Invalid choice. Options: %s\n", strings.Join(options, ", "))
 	}
+}
+
+func hasMarkdownHeading(content, heading string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(strings.TrimSuffix(line, "\r")) == heading {
+			return true
+		}
+	}
+	return false
+}
+
+func extractBuiltinMetaBlock(content string) (string, error) {
+	lines := strings.SplitAfter(content, "\n")
+	start := -1
+	end := len(lines)
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if start == -1 {
+			if trimmed == "## Meta" {
+				start = i
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") && trimmed != "## Meta" {
+			end = i
+			break
+		}
+	}
+	if start == -1 {
+		return "", fmt.Errorf("builtin profile is missing ## Meta")
+	}
+	return strings.TrimRight(strings.Join(lines[start:end], ""), "\r\n"), nil
+}
+
+func insertMetaAfterTitle(content, metaBlock string) (string, bool) {
+	lines := strings.SplitAfter(content, "\n")
+	if len(lines) == 0 {
+		return "", false
+	}
+
+	titleEnd := -1
+	offset := 0
+	for _, line := range lines {
+		offset += len(line)
+		if strings.HasPrefix(strings.TrimSpace(strings.TrimSuffix(line, "\r")), "# ") {
+			titleEnd = offset
+			break
+		}
+	}
+	if titleEnd == -1 {
+		return "", false
+	}
+
+	newline := "\n"
+	if strings.Contains(content, "\r\n") {
+		newline = "\r\n"
+	}
+	metaBlock = strings.ReplaceAll(metaBlock, "\n", newline)
+	rest := strings.TrimLeft(content[titleEnd:], "\r\n")
+	repaired := content[:titleEnd] + newline + metaBlock
+	if rest == "" {
+		return repaired + newline, true
+	}
+	return repaired + newline + newline + rest, true
 }

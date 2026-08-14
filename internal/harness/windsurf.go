@@ -6,14 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
 )
 
 type WindsurfGenerator struct{}
 
-func (g *WindsurfGenerator) Generate(projectDir string, stacks []detector.Stack, agents mapping.AgentConfig) (string, error) {
+func (g *WindsurfGenerator) Generate(projectDir string, project ir.Project) (string, error) {
 	var b strings.Builder
+	stacks, agents := project.Stacks, project.Agents
 
 	b.WriteString("# Project Configuration\n\n")
 

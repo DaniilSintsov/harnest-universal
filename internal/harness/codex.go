@@ -2,18 +2,31 @@ package harness
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
+	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
 )
 
 type CodexGenerator struct{}
 
-func (g *CodexGenerator) Generate(projectDir string, stacks []detector.Stack, agents mapping.AgentConfig) (string, error) {
+func (g *CodexGenerator) Capabilities() ir.Capabilities {
+	return ir.Capabilities{
+		Instructions: ir.Native,
+		ScopedRules:  ir.Fallback,
+		Skills:       ir.Native,
+		Agents:       ir.Native,
+		PreToolHook:  ir.Unsupported,
+		PostToolHook: ir.Unsupported,
+		Permissions:  ir.Fallback,
+		Verification: ir.Fallback,
+	}
+}
+
+func (g *CodexGenerator) Generate(projectDir string, project ir.Project) (string, error) {
 	var b strings.Builder
+	stacks, agents := project.Stacks, project.Agents
 
 	b.WriteString("# Project Instructions\n\n")
 
@@ -24,30 +37,30 @@ func (g *CodexGenerator) Generate(projectDir string, stacks []detector.Stack, ag
 	}
 	b.WriteString("\n")
 
-	// Expert roles (consilium equivalent)
-	b.WriteString("## Expert Perspectives\n")
-	b.WriteString("When analyzing code, consider these perspectives:\n\n")
-	for _, c := range agents.Consilium {
-		if c.Agent == "" {
-			continue
+	if hasAssignedConsilium(agents) {
+		b.WriteString("## Expert Perspectives\n")
+		b.WriteString("When analyzing code, consider these perspectives:\n\n")
+		for _, c := range agents.Consilium {
+			if c.Agent != "" {
+				b.WriteString(fmt.Sprintf("- **%s**: %s (%s)\n", c.Role, describeRole(c.Role), c.Agent))
+			}
 		}
-		b.WriteString(fmt.Sprintf("- **%s**: %s (%s)\n", c.Role, describeRole(c.Role), c.Agent))
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
-	// File ownership
-	b.WriteString("## File Ownership\n")
-	b.WriteString("Match code style and patterns for each area:\n\n")
-	for _, e := range agents.Exec {
-		if e.Agent == "" {
-			continue
+	if hasAssignedExec(agents) {
+		b.WriteString("## File Ownership\n")
+		b.WriteString("Match code style and patterns for each area:\n\n")
+		for _, e := range agents.Exec {
+			if e.Agent != "" {
+				b.WriteString(fmt.Sprintf("- `%s` → %s patterns\n", e.Scope, e.Agent))
+			}
 		}
-		b.WriteString(fmt.Sprintf("- `%s` → %s patterns\n", e.Scope, e.Agent))
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
 	// Model recommendations
-	if len(agents.Models) > 0 {
+	if len(agents.Models) > 0 && hasAssignedConsilium(agents) {
 		b.WriteString("## Model Recommendations\n")
 		b.WriteString("For best results, use higher-capability models for these roles:\n\n")
 		var high, standard []string
@@ -71,13 +84,10 @@ func (g *CodexGenerator) Generate(projectDir string, stacks []detector.Stack, ag
 		b.WriteString("\n")
 	}
 
-	outPath := filepath.Join(projectDir, "AGENTS.md")
-	if _, err := os.Stat(outPath); err == nil {
-		outPath = filepath.Join(projectDir, "AGENTS.generated.md")
-	}
+	b.WriteString(renderControlPlane(project))
 
-	err := os.WriteFile(outPath, []byte(b.String()), 0644)
-	if err != nil {
+	outPath := filepath.Join(projectDir, "AGENTS.md")
+	if err := managedfile.UpsertWithMode(outPath, "harnest", b.String(), 0644); err != nil {
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
 

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/config"
+	"github.com/daniilsintsov/harnest-universal/internal/config"
 )
 
 // FixResult holds the outcome of a fix operation.
@@ -159,11 +159,11 @@ var categoryToAgent = map[string]string{
 // Falls back to a wildcard when the stack is not listed.
 var stackToExtension = map[string]string{
 	// Go
-	"go":        "*.go",
-	"gin":       "*.go",
-	"echo":      "*.go",
-	"fiber":     "*.go",
-	"chi":       "*.go",
+	"go":    "*.go",
+	"gin":   "*.go",
+	"echo":  "*.go",
+	"fiber": "*.go",
+	"chi":   "*.go",
 	// Kotlin / JVM
 	"spring-boot": "*.kt",
 	"ktor":        "*.kt",
@@ -172,10 +172,10 @@ var stackToExtension = map[string]string{
 	"gradle":      "*.kt",
 	"maven":       "*.java",
 	// Swift / Apple
-	"swift":       "*.swift",
-	"swiftui":     "*.swift",
-	"uikit":       "*.swift",
-	"xcodeproj":   "*.swift",
+	"swift":     "*.swift",
+	"swiftui":   "*.swift",
+	"uikit":     "*.swift",
+	"xcodeproj": "*.swift",
 	// JavaScript / TypeScript
 	"vue":        "*.{ts,vue}",
 	"react":      "*.{ts,tsx}",
@@ -192,31 +192,31 @@ var stackToExtension = map[string]string{
 	"javascript": "*.js",
 	"typescript": "*.ts",
 	// Python
-	"python":   "*.py",
-	"django":   "*.py",
-	"fastapi":  "*.py",
-	"flask":    "*.py",
-	"celery":   "*.py",
+	"python":  "*.py",
+	"django":  "*.py",
+	"fastapi": "*.py",
+	"flask":   "*.py",
+	"celery":  "*.py",
 	// Rust
-	"rust": "*.rs",
-	"axum": "*.rs",
+	"rust":  "*.rs",
+	"axum":  "*.rs",
 	"actix": "*.rs",
 	// Flutter / Dart
 	"flutter": "*.dart",
 	"dart":    "*.dart",
 	// Ruby
-	"ruby":       "*.rb",
-	"rails":      "*.rb",
-	"sinatra":    "*.rb",
+	"ruby":    "*.rb",
+	"rails":   "*.rb",
+	"sinatra": "*.rb",
 	// PHP
-	"php":       "*.php",
-	"laravel":   "*.php",
-	"symfony":   "*.php",
+	"php":     "*.php",
+	"laravel": "*.php",
+	"symfony": "*.php",
 	// .NET / C#
-	"dotnet":  "*.cs",
-	"aspnet":  "*.cs",
-	"csharp":  "*.cs",
-	"blazor":  "*.cs",
+	"dotnet": "*.cs",
+	"aspnet": "*.cs",
+	"csharp": "*.cs",
+	"blazor": "*.cs",
 	// Elixir / Erlang
 	"elixir":  "*.ex",
 	"phoenix": "*.ex",

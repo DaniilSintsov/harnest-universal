@@ -7,11 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/agents"
+	"github.com/daniilsintsov/harnest-universal/internal/detector"
+	"github.com/daniilsintsov/harnest-universal/internal/harness"
 )
 
 const gitignoreMarker = "# Harnest generated"
+
+const localExcludeMarker = "# Harnest local"
 
 // Generate produces config files for all harnesses listed in cfg.Harnesses.
 // For each harness it:
@@ -29,25 +32,25 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 		return nil, fmt.Errorf("config must not be nil")
 	}
 
-	if LocalExists(dir) {
-		local, err := LoadLocal(dir)
-		if err == nil && local != nil {
-			cfg = Merge(cfg, local)
-		}
+	project, err := BuildIR(dir, cfg)
+	if err != nil {
+		return nil, err
 	}
 
-	stacks := resolveStacks(dir, cfg)
-	agentConfig := cfg.ToAgentConfig()
-
 	var generated []string
+	portableFiles, err := agents.MaterializePortable(dir, project.Targets)
+	if err != nil {
+		return nil, err
+	}
+	generated = append(generated, portableFiles...)
 
-	for _, harnessName := range cfg.Harnesses {
+	for _, harnessName := range project.Targets {
 		gen, err := harness.Get(harnessName)
 		if err != nil {
 			return generated, fmt.Errorf("harness %q: %w", harnessName, err)
 		}
 
-		outPath, err := gen.Generate(dir, stacks, agentConfig)
+		outPath, err := gen.Generate(dir, project)
 		if err != nil {
 			return generated, fmt.Errorf("generating %q: %w", harnessName, err)
 		}
@@ -58,9 +61,9 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 	return generated, nil
 }
 
-// GenerateDryRun returns what would be generated for each harness without
-// writing any files to disk. The returned map keys are harness names and
-// values are the content strings that would be written.
+// GenerateDryRun previews adapter outputs without writing project files. The
+// returned map keys are harness names and values are adapter content strings.
+// Portable-agent materialization is intentionally not previewed.
 //
 // If .harnest-local.yaml exists in dir, its overrides are merged into cfg
 // before generation. The caller's cfg value is never mutated.
@@ -73,15 +76,10 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (map[string]string, error) {
 		return nil, fmt.Errorf("config must not be nil")
 	}
 
-	if LocalExists(dir) {
-		local, err := LoadLocal(dir)
-		if err == nil && local != nil {
-			cfg = Merge(cfg, local)
-		}
+	project, err := BuildIR(dir, cfg)
+	if err != nil {
+		return nil, err
 	}
-
-	stacks := resolveStacks(dir, cfg)
-	agentConfig := cfg.ToAgentConfig()
 
 	tmpDir, err := os.MkdirTemp("", "harnest-dryrun-*")
 	if err != nil {
@@ -89,15 +87,15 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (map[string]string, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	results := make(map[string]string, len(cfg.Harnesses))
+	results := make(map[string]string, len(project.Targets))
 
-	for _, harnessName := range cfg.Harnesses {
+	for _, harnessName := range project.Targets {
 		gen, err := harness.Get(harnessName)
 		if err != nil {
 			return results, fmt.Errorf("harness %q: %w", harnessName, err)
 		}
 
-		outPath, err := gen.Generate(tmpDir, stacks, agentConfig)
+		outPath, err := gen.Generate(tmpDir, project)
 		if err != nil {
 			return results, fmt.Errorf("dry-run generating %q: %w", harnessName, err)
 		}
@@ -164,6 +162,97 @@ func UpdateGitignore(dir string, files []string) error {
 	}
 
 	return nil
+}
+
+// UpdateLocalExclude keeps Harnest-owned project files local without changing
+// the repository's tracked .gitignore.
+func UpdateLocalExclude(dir string, files []string) error {
+	gitDir := filepath.Join(dir, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		data, err := os.ReadFile(gitDir)
+		if err != nil {
+			return err
+		}
+		value := strings.TrimSpace(string(data))
+		if !strings.HasPrefix(value, "gitdir:") {
+			return fmt.Errorf("invalid .git file")
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(value, "gitdir:"))
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(dir, gitDir)
+		}
+		if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+			commonDir := strings.TrimSpace(string(common))
+			if !filepath.IsAbs(commonDir) {
+				commonDir = filepath.Join(gitDir, commonDir)
+			}
+			gitDir = filepath.Clean(commonDir)
+		}
+	}
+
+	withBackups := append([]string(nil), files...)
+	for _, file := range files {
+		withBackups = append(withBackups, file+".bak")
+	}
+	files = unionStrings(withBackups, []string{
+		filepath.Join(dir, configFileName),
+		filepath.Join(dir, localConfigFileName),
+		filepath.Join(dir, ".harnest") + string(filepath.Separator),
+		filepath.Join(dir, ".agents", "skills") + string(filepath.Separator),
+		filepath.Join(dir, "docs", "architecture") + string(filepath.Separator),
+		filepath.Join(dir, ".reports", "architecture-context") + string(filepath.Separator),
+	})
+	return updateIgnoreFile(filepath.Join(gitDir, "info", "exclude"), dir, files, localExcludeMarker)
+}
+
+func updateIgnoreFile(path, dir string, files []string, marker string) error {
+	existing, err := readGitignoreEntries(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var missing []string
+	for _, file := range files {
+		isDir := strings.HasSuffix(file, string(filepath.Separator))
+		rel, err := filepath.Rel(dir, file)
+		if err != nil {
+			rel = file
+		}
+		rel = filepath.ToSlash(rel)
+		if isDir {
+			rel += "/"
+		}
+		if !existing[rel] {
+			missing = append(missing, rel)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var b strings.Builder
+	b.WriteString("\n" + marker + "\n")
+	for _, entry := range missing {
+		b.WriteString(entry + "\n")
+	}
+	_, err = f.WriteString(b.String())
+	return err
 }
 
 // resolveStacks returns the stack list to use for generation. The strategy is:

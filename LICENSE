@@ -2,6 +2,11 @@ Creative Commons Attribution-NonCommercial 4.0 International
 
 Copyright (c) 2026 Alex Gladkov
 
+Original work: https://github.com/AlexGladkov/harnest
+
+This repository is a modified fork. Changes from the original work are
+identified by its version-control history and project documentation.
+
 This work is licensed under the Creative Commons Attribution-NonCommercial
 4.0 International License. To view a copy of this license, visit
 https://creativecommons.org/licenses/by-nc/4.0/
@@ -19,3 +24,5 @@ No additional restrictions — You may not apply legal terms or technological
 measures that legally restrict others from doing anything the license permits.
 
 For commercial licensing inquiries, contact the author.
+
+Third-party components retain their own licenses. See THIRD_PARTY_NOTICES.md.

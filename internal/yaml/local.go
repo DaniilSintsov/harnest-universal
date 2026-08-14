@@ -12,7 +12,7 @@ const localConfigFileName = ".harnest-local.yaml"
 
 const localFileHeader = `# .harnest-local.yaml — personal overrides for harnest.yaml.
 # This file is intentionally gitignored. It applies on top of the team config.
-# Documentation: https://github.com/AlexGladkov/harnest
+# Documentation: see the README bundled with this Harnest build.
 `
 
 // LocalConfig represents personal overrides stored in .harnest-local.yaml.

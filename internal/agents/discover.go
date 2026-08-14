@@ -1,13 +1,16 @@
 package agents
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,7 +43,7 @@ func Discover(projectDir string) []string {
 
 	// 2. Global agents from all registered harness locations
 	for _, dir := range harness.AgentDirs() {
-		scanFlat(filepath.Join(home, dir), "", add)
+		scanFlat(filepath.Join(home, dir), "", []string{".md"}, add)
 	}
 
 	// 3. All plugins: walk ~/.claude/plugins/cache/ for plugin.json
@@ -48,6 +51,222 @@ func Discover(projectDir string) []string {
 		add(name)
 	}
 
+	return result
+}
+
+// DiscoverPortable returns agents explicitly declared portable by the project.
+func DiscoverPortable(projectDir string) []string {
+	return scanWithFrontmatter(filepath.Join(projectDir, ".agents", "agents"), "")
+}
+
+const portableOwnershipMarker = "<!-- harnest-portable-agent:managed -->"
+
+// MaterializePortable copies project-portable agents into only the selected
+// adapters' callable agent directories. Existing user files are backed up
+// before Harnest takes managed ownership.
+func MaterializePortable(projectDir string, targets []string) ([]string, error) {
+	sourceDir := filepath.Join(projectDir, ".agents", "agents")
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		entries = nil
+	}
+
+	type portableAgent struct {
+		name    string
+		content []byte
+	}
+	seen := map[string]bool{}
+	var portable []portableAgent
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") || entry.Name() == "README.md" {
+			continue
+		}
+		sourcePath := filepath.Join(sourceDir, entry.Name())
+		name := parseAgentName(sourcePath)
+		if name == "" {
+			continue
+		}
+		if !safeCallableName(name) {
+			return nil, fmt.Errorf("portable agent %s has unsafe callable name %q", sourcePath, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate portable agent callable name %q", name)
+		}
+		content, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return nil, err
+		}
+		seen[name] = true
+		portable = append(portable, portableAgent{name: name, content: content})
+	}
+	sort.Slice(portable, func(i, j int) bool { return portable[i].name < portable[j].name })
+
+	var generated []string
+	for _, target := range targets {
+		agentDir, err := harness.AgentDir(target)
+		if err != nil {
+			return generated, err
+		}
+		if agentDir == "" {
+			continue
+		}
+		desired := make(map[string]bool, len(portable))
+		for _, agent := range portable {
+			outPath := filepath.Join(projectDir, agentDir, agent.name+".md")
+			desired[filepath.Clean(outPath)] = true
+			if err := writePortableAgent(outPath, agent.content); err != nil {
+				return generated, fmt.Errorf("materializing portable agent %q for %s: %w", agent.name, target, err)
+			}
+			generated = append(generated, outPath)
+		}
+		if err := cleanupPortableAgents(filepath.Join(projectDir, agentDir), desired); err != nil {
+			return generated, fmt.Errorf("cleaning stale portable agents for %s: %w", target, err)
+		}
+	}
+	return generated, nil
+}
+
+func safeCallableName(name string) bool {
+	return name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, "\\/\r\n")
+}
+
+func writePortableAgent(path string, source []byte) error {
+	desired := []byte(strings.TrimRight(string(source), "\r\n") + "\n\n" + portableOwnershipMarker + "\n")
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return managedfile.WriteAtomic(path, desired, 0644)
+		}
+		return err
+	}
+	if string(existing) == string(desired) {
+		return nil
+	}
+	if hasPortableOwnership(existing) {
+		return managedfile.WriteAtomic(path, desired, infoMode(path, 0644))
+	}
+	if strings.Contains(string(existing), "<!-- harnest-portable-agent:") {
+		return fmt.Errorf("file has unknown portable-agent ownership marker: %s", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if err := managedfile.WriteAtomic(path+".bak", existing, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("creating backup: %w", err)
+	}
+	return managedfile.WriteAtomic(path, desired, info.Mode().Perm())
+}
+
+func cleanupPortableAgents(dir string, desired map[string]bool) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if desired[filepath.Clean(path)] {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !hasPortableOwnership(content) {
+			continue
+		}
+		backupPath := path + ".bak"
+		backup, err := os.ReadFile(backupPath)
+		if err == nil {
+			info, statErr := os.Stat(backupPath)
+			if statErr != nil {
+				return statErr
+			}
+			if err := managedfile.WriteAtomic(path, backup, info.Mode().Perm()); err != nil {
+				return err
+			}
+			if err := os.Remove(backupPath); err != nil {
+				return err
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(content)
+		deletedBackup := fmt.Sprintf("%s.deleted-%x.bak", path, sum[:6])
+		if err := managedfile.WriteAtomic(deletedBackup, content, info.Mode().Perm()); err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasPortableOwnership(content []byte) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n") {
+		if line == portableOwnershipMarker {
+			return true
+		}
+	}
+	return false
+}
+
+func infoMode(path string, fallback os.FileMode) os.FileMode {
+	if info, err := os.Stat(path); err == nil {
+		return info.Mode().Perm()
+	}
+	return fallback
+}
+
+// DiscoverForTarget prevents platform-specific agents leaking into another adapter.
+func DiscoverForTarget(projectDir, target string) []string {
+	seen := map[string]bool{}
+	var result []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			result = append(result, name)
+		}
+	}
+	for _, name := range DiscoverPortable(projectDir) {
+		add(name)
+	}
+	dir, err := harness.AgentDir(target)
+	if err != nil || dir == "" {
+		return result
+	}
+	for _, name := range scanWithFrontmatter(filepath.Join(projectDir, dir), "") {
+		add(name)
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		suffixes := []string{".md"}
+		if target == "codex" {
+			suffixes = append(suffixes, ".toml")
+		}
+		scanFlat(filepath.Join(home, dir), "", suffixes, add)
+		if target == "claude-code" {
+			for _, name := range scanPlugins(filepath.Join(home, ".claude", "plugins", "cache")) {
+				add(name)
+			}
+		}
+	}
 	return result
 }
 
@@ -138,7 +357,7 @@ func scanPlugins(root string) []string {
 
 		// 1. Scan agents/ directory (primary method — Claude Code auto-discovers these)
 		agentsDir := filepath.Join(versionDir, "agents")
-		scanFlat(agentsDir, p.Name+":", add)
+		scanFlat(agentsDir, p.Name+":", []string{".md"}, add)
 
 		// 2. Also process explicit "agents" field for backward compatibility
 		for _, agentPath := range p.Agents {
@@ -162,18 +381,28 @@ func scanPlugins(root string) []string {
 
 // --- flat scanning ---
 
-// scanFlat reads *.md from dir, adds prefix+basename (without .md).
-// Skips README.md and empty names.
-func scanFlat(dir, prefix string, add func(string)) {
+// scanFlat reads files with allowed suffixes from dir, adds prefix+basename.
+// Skips README and empty names.
+func scanFlat(dir, prefix string, suffixes []string, add func(string)) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+		if e.IsDir() {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ".md")
+		suffix := ""
+		for _, candidate := range suffixes {
+			if strings.HasSuffix(e.Name(), candidate) {
+				suffix = candidate
+				break
+			}
+		}
+		if suffix == "" {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), suffix)
 		if name == "README" || name == "" {
 			continue
 		}

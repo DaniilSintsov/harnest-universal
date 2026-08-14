@@ -1,343 +1,156 @@
-# Harnest
+# Harnest Universal
 
-AI coding assistant configurator. Detects your project stack, runs an interactive agent wizard, and generates configs for Claude Code, Cursor, Windsurf, Codex, OpenCode, and Qwen Code.
+Универсальный локальный workflow для работы AI coding agents с любым репозиторием.
 
-## About
+CLI остаётся детерминированным: обнаруживает проект, валидирует YAML, строит vendor-neutral IR, компилирует инструкции и запускает проверки. Исследование кода, архитектурные решения и формирование правил выполняют portable Agent Skills.
 
-Every AI coding tool needs project context. Manually maintaining `CLAUDE.md`, `.cursorrules`, `.windsurfrules` is tedious — especially for multi-stack projects where wrong agents get assigned.
+## Поддержка v1
 
-Harnest solves this with a three-layer system:
+- Claude Code и Codex: активные adapters.
+- Cursor, Windsurf, OpenCode и Qwen Code: не входят в поддерживаемую v1 matrix. Legacy generators остаются в source без public compatibility guarantees.
+- Русский язык по умолчанию; `settings.language: en` переключает создаваемые workflow-инструкции.
+- Production deploy не входит в default workflow.
 
-<table>
-<tr>
-<td><img src="docs/layers.jpg" alt="Three layers of the system" /></td>
-<td><img src="docs/flow.jpg" alt="Request processing flow" /></td>
-</tr>
-</table>
+## Локальный запуск
 
-## Install
-
-**1. Get the binary**
+Нужен Go 1.25+.
 
 ```bash
-brew tap AlexGladkov/tap
-brew install harnest
+make build
+./bin/harnest install
+cd /path/to/project
+/path/to/harnest/bin/harnest init
 ```
 
-Or with npm:
+После публикации module можно установить через Go:
 
 ```bash
-npm install -g harnest
+go install github.com/daniilsintsov/harnest-universal/cmd/harnest@latest
 ```
 
-Or with Go:
+`make release` собирает Darwin, Linux и Windows binaries для x64/arm64 и создаёт `dist/checksums.txt`.
 
-```bash
-go install github.com/AlexGladkov/harnest/cmd/harnest@latest
+`harnest install`:
+
+- обнаруживает установленные Claude Code и Codex; на чистой машине ставит оба target-а;
+- `--harness claude-code|codex` ограничивает установку одним target-ом;
+- добавляет/обновляет только managed block в `~/.claude/CLAUDE.md` и `~/.codex/AGENTS.md`;
+- сохраняет внешний текст, права файла и `.bak`;
+- ставит profiles и portable skills в каталоги выбранных платформ;
+- обновляет неизменённые builtin profiles по checksum state, а пользовательские сохраняет;
+- переносит retired upstream profiles/agents в hash-named recoverable backup только при точном известном checksum;
+- останавливается при повреждённых или дублированных managed markers.
+
+`harnest init` создаёт schema v2 и запускает agent wizard: для каждой consilium-роли и exec scope можно принять предложенного агента, пропустить назначение, найти установленного агента или указать имя вручную. `harnest init --non-interactive` принимает предложения автоматически для CI и scripts. Пути architecture/rules/skills резервируются в config, но используются только если artifacts существуют. Harnest artifacts локальны по умолчанию через `.git/info/exclude`; tracked `.gitignore` не меняется. Глубокий архитектурный onboarding запускается отдельно: `/harnest-bootstrap`.
+
+Portable agents из `.agents/agents/*.md` копируются под реальным `name` только в каталоги выбранных adapters, например `.claude/agents/` и `.codex/agents/`. При конфликте существующий target-файл сохраняется как `.bak`; последующие обновления распознаются по managed ownership marker.
+
+`harnest generate --dry-run` показывает только adapter outputs. Materialization и cleanup portable agents в dry-run не previewed.
+
+## Distribution
+
+Поддерживаемые каналы: Go install и binaries из GitHub Releases. Npm и Homebrew packages не публикуются.
+
+## Workflow
+
+1. Перед каждой новой задачей интерактивно выбирается workflow-профиль. Явно названный профиль считается выбранным; иначе Harnest предлагает лучший match по Meta и до двух альтернатив.
+2. Primary roles определяются автоматически по запросу и выбранному профилю; отдельного вопроса пользователю нет.
+3. Любая code-changing задача проходит `Research → Plan → Executing`; мелкая задача сокращает глубину стадий, но не пропускает их.
+4. `business-feature` используется как рекомендуемый fallback только когда Meta не даёт точного match.
+5. Назначенная доступная роль используется обязательно. Значение `auto` выбирает совместимого агента текущей платформы; при отсутствии агент явно сообщает main-agent fallback.
+6. Если configured paths существуют, загружаются только релевантные architecture docs, skills и scoped rules.
+7. Code-changing задача завершается `harnest verify --changed`; read-only research проверки не требует. Для нестандартной mainline укажи `--base <ref>`.
+
+## Schema v2
+
+```yaml
+version: 2
+project:
+  name: example
+context:
+  architecture:
+    index: docs/architecture/INDEX.md
+    state: docs/architecture/.context-state.json
+rules:
+  root: .harnest/rules
+  index: .harnest/rules/INDEX.yaml
+skills:
+  root: .agents/skills
+checks:
+  root: .harnest/checks
+workflow:
+  default_profile: business-feature
+  role_selection: auto # interactive поддерживается как legacy alias для auto
+  require_available_roles: true
+  verify_changed: true
+agents:
+  consilium:
+    architect: auto
+    security: auto
+  executing: []
+harnesses: [claude-code, codex]
+settings:
+  local_default: true
+  language: ru
 ```
 
-Or download from [Releases](https://github.com/AlexGladkov/harnest/releases).
+Legacy `version: 1` читается. `harnest migrate` создаёт `harnest.yaml.v1.bak` и атомарно записывает v2.
 
-**2. Install the framework**
+## Rules и checks
 
-```bash
-harnest install
+Active rules лежат в `.harnest/rules/*.yaml`:
+
+```yaml
+id: protect-production
+severity: required
+statement: Не изменять production-конфигурацию без явного разрешения.
+scope:
+  paths: [deploy/**]
+enforcement:
+  - type: protect-path
+    paths: [deploy/**]
 ```
 
-Installs 6 workflow profiles and global CLAUDE.md framework to `~/.claude/`. Uses `<!-- harnest-managed -->` markers — your custom content is preserved on updates.
+Severity:
 
-## Scenarios
+- `hard` — только с механическим enforcement;
+- `required` — обязательное semantic требование;
+- `preference` — локальное предпочтение.
 
-### First-time setup
+`harnest doctor` возвращает ошибку, если hard rule нельзя обеспечить выбранным adapter. Claude Code и Codex сейчас имеют `verification=fallback`, поэтому instruction-driven `harnest verify --changed` не делает hard rule adapter-native. `deny-command` не поддерживается и отклоняется при validation для любой severity; доступны `protect-path` и `require-check`. Custom executable-check запускается без shell-интерпретации и только при `approved: true`; список изменённых файлов доступен ему в `HARNEST_CHANGED_FILES`, по одному пути на строку. `harnest learn` создаёт inactive candidate в `.harnest/rules/candidates/`; автоматической активации нет.
 
-```bash
-# 1. Install profiles + global CLAUDE.md
-harnest install
+## Команды
 
-# 2. Go to your project and generate config
-cd my-project
-harnest init
+```text
+harnest install [--harness claude-code|codex]
+harnest init [dir] [--harness claude-code|codex] [--non-interactive]
+harnest migrate [dir]
+harnest generate [dir] [--dry-run]
+harnest doctor [dir]
+harnest verify --changed [dir] [--base <ref>] [--allow <rule-id>]
+harnest profiles list|add|edit|remove [name] [--harness claude-code|codex]
+harnest learn [dir] --id <id> --statement <text>
+harnest detect [dir]
+harnest drift [dir] # legacy schema v1 only
+harnest export [dir]
+harnest convert --from claude-code --to claude-code|codex [dir]
 ```
 
-The wizard detects your stack, then asks for each role and exec scope:
+`convert` читает только exact `CLAUDE.md` source и переносит legacy agent mapping. Он не переносит schema v2 control-plane fields; для v2 используй `harnest generate`.
 
-```
-Detected stack:
-  - spring-boot (kotlin) [springApp/]
-  - vue (typescript) [webApp/]
-  - docker (dockerfile) [.]
+`drift` анализирует только legacy schema v1 configs. При наличии schema v2 команда возвращает явную unsupported error до чтения соседних legacy-файлов.
 
-── Agent Wizard ──
-Found 42 agents on this machine
-Enter = accept suggestion, s = skip, ? = search
+## Portable skills
 
-[Consilium: architect]
-  Suggestion: voltagent-lang:java-architect
-  Enter=accept, s=skip, ?=search: _
-```
+- `harnest-bootstrap`
+- `architecture-context-builder`
+- `project-rules-builder`
+- `compliance-review`
 
-- **Enter** — accept suggestion
-- **s** — skip role (won't appear in config)
-- **?** — search installed agents by name
-- **type name** — use your own agent (confirms if not found locally)
+Installer также сохраняет включённые license/source notices для bundled reference materials.
 
-### Detect stack without generating
+## Лицензия и происхождение
 
-```bash
-harnest detect
-```
+Проект распространяется по [CC BY-NC 4.0](LICENSE). Коммерческое использование лицензией не разрешено.
 
-Shows detected technologies without creating any config files.
-
-### Change agents after init
-
-Generated config wrong agent? Override it:
-
-```bash
-harnest agents set architect my-custom-architect
-```
-
-Or edit the generated file directly (`CLAUDE.md`, `.cursorrules`, `.windsurfrules`) — it's plain markdown.
-
-### View current agent mappings
-
-```bash
-harnest agents list
-```
-
-Shows consilium roles and exec scopes from your project config. If no config exists, shows suggestions based on detected stack.
-
-### Switch to a different harness
-
-Already have `CLAUDE.md` but need `.cursorrules` too?
-
-```bash
-harnest convert --from claude-code --to cursor
-```
-
-Or re-run init for a specific harness:
-
-```bash
-harnest init --harness windsurf
-```
-
-### CI / scripts (no wizard)
-
-```bash
-harnest init --non-interactive
-```
-
-Uses suggested agents automatically. Defaults to Claude Code.
-
-### Update profiles after Harnest upgrade
-
-```bash
-harnest install
-```
-
-Re-running `install` updates profiles and the managed block in global CLAUDE.md. Your custom content outside `<!-- harnest-managed -->` stays intact.
-
-### Manage profiles
-
-```bash
-harnest profiles list              # show installed profiles
-harnest profiles add my-workflow    # interactive wizard to create custom profile
-harnest profiles edit my-workflow   # open in $EDITOR
-harnest profiles remove research   # delete profile
-```
-
-The `add` wizard lets you build a custom profile step by step: pick stages, assign agent types (single / consilium / bash / none), select roles, and auto-generates stage transitions.
-
-## CLI Reference
-
-```
-harnest install                                          Install framework
-harnest init [dir] [--harness <name>] [--non-interactive]  Generate project config
-harnest detect [dir]                                     Show detected stack
-harnest profiles list|add|edit|remove [name]             Manage profiles
-harnest agents list [dir]                                View agent mappings
-harnest agents set <role> <agent> [--dir <path>]         Override agent for role
-harnest convert --from <harness> --to <harness> [dir]    Convert between formats
-harnest update                                           Check for mapping updates
-harnest version                                          Show version
-```
-
-## Stack Detection
-
-Harnest auto-detects **92 stacks** across **30+ languages** by scanning build files and dependency manifests. All detectors scan every first-level subdirectory — non-standard folder names like `springApp/` or `webApp/` work out of the box.
-
-### Backend
-
-| Stack | Language | Detection signal |
-|-------|----------|-----------------|
-| spring-boot | Kotlin | `build.gradle.kts` with spring-boot/springframework |
-| ktor | Kotlin | `build.gradle.kts` with io.ktor |
-| quarkus | Kotlin/Java | `build.gradle.kts` / `pom.xml` with quarkus |
-| micronaut | Kotlin/Java | `build.gradle.kts` / `pom.xml` with micronaut |
-| spring-boot-java | Java | `pom.xml` / `build.gradle` with spring-boot |
-| vapor | Swift | `Package.swift` with vapor |
-| swift-package | Swift | `Package.swift` |
-| node | TypeScript | `package.json` with express/fastify/nestjs/koa/hono |
-| deno | TypeScript | `deno.json` / `deno.jsonc` |
-| bun | TypeScript | `bunfig.toml` |
-| strapi | TypeScript | `package.json` with @strapi/strapi |
-| fastapi | Python | `pyproject.toml` / `requirements.txt` with fastapi |
-| django | Python | `pyproject.toml` / `requirements.txt` with django |
-| flask | Python | `pyproject.toml` / `requirements.txt` with flask |
-| starlette | Python | `pyproject.toml` / `requirements.txt` with starlette |
-| pyramid | Python | `pyproject.toml` / `requirements.txt` with pyramid |
-| litestar | Python | `pyproject.toml` / `requirements.txt` with litestar |
-| go | Go | `go.mod` |
-| gin | Go | `go.mod` with gin-gonic/gin |
-| fiber | Go | `go.mod` with gofiber/fiber |
-| echo | Go | `go.mod` with labstack/echo |
-| chi | Go | `go.mod` with go-chi/chi |
-| rust | Rust | `Cargo.toml` |
-| axum | Rust | `Cargo.toml` with axum |
-| actix | Rust | `Cargo.toml` with actix-web |
-| rocket | Rust | `Cargo.toml` with rocket |
-| rails | Ruby | `Gemfile` with rails |
-| sinatra | Ruby | `Gemfile` with sinatra |
-| laravel | PHP | `composer.json` with laravel/framework |
-| symfony | PHP | `composer.json` with symfony/framework-bundle |
-| wordpress | PHP | `wp-config.php` / `wp-content/` |
-| dotnet | C# | `*.csproj` / `*.sln` |
-| phoenix | Elixir | `mix.exs` with phoenix |
-| elixir | Elixir | `mix.exs` |
-| erlang | Erlang | `rebar.config` |
-| scala / play / akka | Scala | `build.sbt` |
-| clojure | Clojure | `deps.edn` / `project.clj` |
-| grails | Groovy | `build.gradle` with grails |
-| haskell | Haskell | `stack.yaml` / `*.cabal` |
-| ocaml | OCaml | `dune-project` |
-| c | C | `CMakeLists.txt` (C project) / `Makefile` with gcc |
-| cpp | C++ | `CMakeLists.txt` (CXX) / `meson.build` / `Makefile` with g++ |
-| zig | Zig | `build.zig` |
-| nim | Nim | `*.nimble` |
-| vlang | V | `v.mod` |
-| crystal | Crystal | `shard.yml` |
-| gleam | Gleam | `gleam.toml` |
-| lua | Lua | `*.rockspec` / `.luacheckrc` |
-| perl | Perl | `cpanfile` / `Makefile.PL` |
-
-### Frontend
-
-| Stack | Language | Detection signal |
-|-------|----------|-----------------|
-| vue | TypeScript | `package.json` with `"vue"` (excl. nuxt) |
-| nuxt | TypeScript | `package.json` with `"nuxt"` |
-| react | TypeScript | `package.json` with `"react"` (excl. next/remix/expo/RN) |
-| nextjs | TypeScript | `package.json` with `"next"` |
-| gatsby | TypeScript | `package.json` with `"gatsby"` |
-| remix | TypeScript | `package.json` with `"@remix-run/react"` |
-| angular | TypeScript | `angular.json` |
-| svelte | TypeScript | `package.json` with `"svelte"` (excl. sveltekit) |
-| sveltekit | TypeScript | `package.json` with `"@sveltejs/kit"` |
-| solid | TypeScript | `package.json` with `"solid-js"` |
-| qwik | TypeScript | `package.json` with `"@builder.io/qwik"` |
-| astro | TypeScript | `package.json` with `"astro"` |
-| ember | TypeScript | `package.json` with `"ember-cli"` |
-| eleventy | TypeScript | `package.json` with `"@11ty/eleventy"` |
-| hugo | Go | `hugo.toml` / `config.toml` with baseURL |
-| jekyll | Ruby | `Gemfile` with jekyll |
-
-### Mobile
-
-| Stack | Language | Detection signal |
-|-------|----------|-----------------|
-| compose-multiplatform | Kotlin | `composeApp/` directory |
-| android | Kotlin | `app/build.gradle.kts` (no composeApp) |
-| ios-native | Swift | `iosApp/` or `*.xcodeproj` |
-| flutter | Dart | `pubspec.yaml` |
-| expo | TypeScript | `package.json` with `"expo"` |
-| react-native | TypeScript | `package.json` with `"react-native"` (excl. expo) |
-| ionic | TypeScript | `package.json` with `"@ionic/*"` |
-| capacitor | TypeScript | `package.json` with `"@capacitor/core"` |
-| maui | C# | `*.csproj` with Maui |
-
-### Desktop
-
-| Stack | Language | Detection signal |
-|-------|----------|-----------------|
-| electron | TypeScript | `package.json` with `"electron"` |
-| tauri | Rust | `Cargo.toml` with tauri / `tauri.conf.json` |
-
-### Data / Scientific
-
-| Stack | Language | Detection signal |
-|-------|----------|-----------------|
-| streamlit | Python | `requirements.txt` with streamlit |
-| gradio | Python | `requirements.txt` with gradio |
-| jupyter | Python | `*.ipynb` files in root |
-| julia | Julia | `Project.toml` with uuid |
-| r | R | `DESCRIPTION` with Type / `*.Rproj` |
-
-### Infrastructure
-
-| Stack | Language | Detection signal |
-|-------|----------|-----------------|
-| docker | Dockerfile | `Dockerfile` / `docker-compose.yml` / `compose.yaml` |
-| terraform | HCL | `*.tf` files |
-| helm | YAML | `Chart.yaml` |
-| pulumi | YAML | `Pulumi.yaml` |
-| ansible | YAML | `ansible.cfg` / `playbook.yml` / `roles/` |
-| github-actions | YAML | `.github/workflows/` |
-
-Multi-stack projects are fully supported — each detected stack gets its own exec agent scope with the correct directory path.
-
-## Agent Discovery
-
-The wizard scans installed agents from multiple sources:
-
-- **Harness agent dirs**: `~/.claude/agents/`, `~/.cursor/agents/`, `~/.windsurf/agents/`, `~/.codex/agents/`, `~/.config/opencode/agents/`, `~/.qwen/agents/`
-- **Plugins**: `~/.claude/plugins/cache/*/plugin.json` — scans `<plugin>/agents/*.md` directory (primary) and explicit `agents` field in plugin.json (backward compat). Agents are namespaced as `plugin-name:agent-name`.
-- **Project agents** (`0.12.0+`): `<project>/.claude/agents/*.md`, `<project>/.cursor/agents/*.md`, `<project>/.windsurf/agents/*.md`, etc. — all registered harness agent dirs. YAML frontmatter with `name:` field, falls back to filename. Project agents take priority over global agents with the same name.
-
-Search with `?` in the wizard to filter by substring.
-
-## Package
-
-### Workflow profiles
-
-Installed to `~/.claude/profiles/`. Each profile defines stages and roles — no hardcoded agents.
-
-| Profile | Stages |
-|---------|--------|
-| business-feature | Research → Plan → Executing → Validation → Report |
-| bug-hunting | Reproduce → Diagnose → Fix → Validation → Report |
-| research | Consilium investigation, no code changes |
-| refactoring | Audit → Plan → Executing → Regression check |
-| e2e-testing | Prepare → Deploy → Run → Fix → Re-run → Report |
-| e2e-authoring | Research → Propose → Approve → Save scenarios |
-
-### Consilium roles
-
-9 roles available for agent assignment during `harnest init`:
-
-| Role | Purpose |
-|------|---------|
-| architect | Architecture, modules, dependencies, SOLID |
-| frontend | UI/UX review, frontend patterns |
-| ui | Visual design, UX, components |
-| security | OWASP, vulnerabilities, auth |
-| devops | Infrastructure, CI/CD, deployment |
-| api | API contracts, REST/GraphQL |
-| diagnostics | Logs, stacktraces, debugging |
-| test | Test coverage, quality |
-| mobile | Mobile platforms, cross-platform |
-
-### Harness output formats
-
-| Harness | Output File | Features |
-|---------|------------|----------|
-| Claude Code | `CLAUDE.md` | Full consilium + exec scope + profiles |
-| Cursor | `.cursorrules` | Expert roles + file ownership |
-| Windsurf | `.windsurfrules` | Stack context + code areas |
-| Codex | `AGENTS.md` | Expert perspectives + file ownership |
-| OpenCode | `opencode.json` | Subagent declarations + agent files |
-| Qwen Code | `QWEN.md` | Expert perspectives + file ownership |
-
-## License
-
-This software is licensed under [CC BY-NC 4.0](LICENSE) — free for non-commercial use.
-For commercial licensing, contact the author.
+Это modified fork [AlexGladkov/harnest](https://github.com/AlexGladkov/harnest). Third-party components и их отдельные лицензии перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

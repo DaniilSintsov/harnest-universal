@@ -6,14 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
 )
 
 type QwenCodeGenerator struct{}
 
-func (g *QwenCodeGenerator) Generate(projectDir string, stacks []detector.Stack, agents mapping.AgentConfig) (string, error) {
+func (g *QwenCodeGenerator) Generate(projectDir string, project ir.Project) (string, error) {
 	var b strings.Builder
+	stacks, agents := project.Stacks, project.Agents
 
 	projectName := filepath.Base(projectDir)
 
@@ -48,10 +48,10 @@ func (g *QwenCodeGenerator) Generate(projectDir string, stacks []detector.Stack,
 	}
 	b.WriteString("\n")
 
-	// Model recommendations (Qwen-specific models)
+	// Model recommendations
 	if len(agents.Models) > 0 {
 		b.WriteString("## Model Recommendations\n")
-		b.WriteString("For best results with Qwen models:\n\n")
+		b.WriteString("Concrete models come from adapter mappings; otherwise use platform defaults.\n\n")
 		var high, standard, low []string
 		for _, c := range agents.Consilium {
 			if c.Agent == "" {
@@ -68,13 +68,13 @@ func (g *QwenCodeGenerator) Generate(projectDir string, stacks []detector.Stack,
 			}
 		}
 		if len(high) > 0 {
-			b.WriteString(fmt.Sprintf("- %s — use qwen-max\n", strings.Join(high, ", ")))
+			b.WriteString(fmt.Sprintf("- %s — high tier\n", strings.Join(high, ", ")))
 		}
 		if len(standard) > 0 {
-			b.WriteString(fmt.Sprintf("- %s — use qwen-plus\n", strings.Join(standard, ", ")))
+			b.WriteString(fmt.Sprintf("- %s — medium tier\n", strings.Join(standard, ", ")))
 		}
 		if len(low) > 0 {
-			b.WriteString(fmt.Sprintf("- %s — use qwen-turbo\n", strings.Join(low, ", ")))
+			b.WriteString(fmt.Sprintf("- %s — low tier\n", strings.Join(low, ", ")))
 		}
 		b.WriteString("\n")
 	}
