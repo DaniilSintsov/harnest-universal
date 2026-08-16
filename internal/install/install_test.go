@@ -16,18 +16,21 @@ func TestInstallAllWritesHarnessSpecificProfiles(t *testing.T) {
 	for _, test := range []struct {
 		harness   string
 		dir       string
+		skillsDir string
 		want      []string
 		forbidden []string
 	}{
 		{
 			harness:   "claude-code",
 			dir:       ".claude",
+			skillsDir: filepath.Join(".claude", "skills"),
 			want:      []string{"CLAUDE.md", "opus", "sonnet", "haiku"},
 			forbidden: []string{"AGENTS.md", "| sol", "| terra", "| luna"},
 		},
 		{
 			harness:   "codex",
 			dir:       ".codex",
+			skillsDir: filepath.Join(".agents", "skills"),
 			want:      []string{"AGENTS.md", "sol", "terra", "luna"},
 			forbidden: []string{"CLAUDE.md", "| opus", "| sonnet", "| haiku"},
 		},
@@ -50,6 +53,14 @@ func TestInstallAllWritesHarnessSpecificProfiles(t *testing.T) {
 			for _, forbidden := range test.forbidden {
 				if strings.Contains(content, forbidden) {
 					t.Errorf("%s profile contains %q", test.harness, forbidden)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(home, test.skillsDir, "harnest-bootstrap", "SKILL.md")); err != nil {
+				t.Fatalf("native skill directory missing: %v", err)
+			}
+			if test.harness == "codex" {
+				if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "harnest-bootstrap", "SKILL.md")); !os.IsNotExist(err) {
+					t.Fatalf("legacy Codex skill path was written: %v", err)
 				}
 			}
 		})

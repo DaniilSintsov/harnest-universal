@@ -43,13 +43,41 @@ go install github.com/daniilsintsov/harnest-universal/cmd/harnest@latest
 
 `harnest init` создаёт schema v2 и запускает agent wizard: для каждой consilium-роли и exec scope можно принять предложенного агента, пропустить назначение, найти установленного агента или указать имя вручную. `harnest init --non-interactive` принимает предложения автоматически для CI и scripts. Пути architecture/rules/skills резервируются в config, но используются только если artifacts существуют. Harnest artifacts локальны по умолчанию через `.git/info/exclude`; tracked `.gitignore` не меняется. Глубокий архитектурный onboarding запускается отдельно: `/harnest-bootstrap`.
 
-Portable agents из `.agents/agents/*.md` копируются под реальным `name` только в каталоги выбранных adapters, например `.claude/agents/` и `.codex/agents/`. При конфликте существующий target-файл сохраняется как `.bak`; последующие обновления распознаются по managed ownership marker.
+Portable agents из Harnest-source `.agents/agents/*.md` материализуются в нативный формат выбранного adapter: `.claude/agents/<name>.md` для Claude Code и `.codex/agents/<name>.toml` для Codex. Codex TOML получает обязательные `name`, `description`, `developer_instructions`; при конфликте существующий target-файл сохраняется как `.bak`, последующие обновления распознаются по managed ownership marker.
+
+Project skills остаются общим нативным source в `.agents/skills`. Global bundled skills ставятся в `~/.claude/skills` для Claude Code и `~/.agents/skills` для Codex.
 
 `harnest generate --dry-run` показывает только adapter outputs. Materialization и cleanup portable agents в dry-run не previewed.
+
+`harnest convert --from claude-code --to codex` переключает target в существующем `harnest.yaml`; без него сохраняется legacy-конвертация из `CLAUDE.md`.
 
 ## Distribution
 
 Поддерживаемые каналы: Go install и binaries из GitHub Releases. Npm и Homebrew packages не публикуются.
+
+## Обновление
+
+Harnest не обновляет себя автоматически. Если CLI установлен через Go, установи последнюю версию поверх текущей и повторно примени встроенные profiles, global config и skills:
+
+```bash
+go install github.com/daniilsintsov/harnest-universal/cmd/harnest@latest
+harnest version
+harnest install
+```
+
+`harnest install` обновляет неизменённые builtin profiles, сохраняет custom profiles и создаёт backup перед миграцией изменённых managed-файлов.
+
+Если Harnest установлен из GitHub Releases, скачай binary для своей OS/architecture и `checksums.txt`, проверь SHA-256, замени текущий executable, затем запусти `harnest install`.
+
+После обновления CLI обнови каждый существующий проект:
+
+```bash
+harnest migrate /path/to/project
+harnest generate /path/to/project
+harnest doctor /path/to/project
+```
+
+`migrate` создаёт backup при переходе на новую schema и ничего не меняет, если проект уже использует текущую версию. `generate` заново применяет project config к Claude Code и Codex.
 
 ## Workflow
 

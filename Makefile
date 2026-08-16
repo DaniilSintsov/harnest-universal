@@ -1,4 +1,4 @@
-VERSION ?= 0.12.0-universal.1
+VERSION ?= 0.12.0-universal.2
 BINARY := harnest
 LDFLAGS := -s -w -X main.version=$(VERSION)
 .PHONY: build clean release version

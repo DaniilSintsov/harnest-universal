@@ -24,13 +24,15 @@ type HarnessInfo struct {
 	// AgentDir is the relative path under $HOME where this harness stores custom agents.
 	// Empty means no custom agent dir.
 	AgentDir string
+	// SkillDir is the relative path under $HOME where this harness discovers skills.
+	SkillDir string
 	// GlobalConfigFile is the filename for this harness's global config.
 	GlobalConfigFile string
 }
 
 var registry = map[string]HarnessInfo{
-	"claude-code": {Generator: &ClaudeCodeGenerator{}, AgentDir: ".claude/agents", GlobalConfigFile: "CLAUDE.md"},
-	"codex":       {Generator: &CodexGenerator{}, AgentDir: ".codex/agents", GlobalConfigFile: "AGENTS.md"},
+	"claude-code": {Generator: &ClaudeCodeGenerator{}, AgentDir: ".claude/agents", SkillDir: ".claude/skills", GlobalConfigFile: "CLAUDE.md"},
+	"codex":       {Generator: &CodexGenerator{}, AgentDir: ".codex/agents", SkillDir: ".agents/skills", GlobalConfigFile: "AGENTS.md"},
 }
 
 func Get(name string) (Generator, error) {
@@ -93,6 +95,19 @@ func GlobalConfigPath(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, h.GlobalConfigFile), nil
+}
+
+// GlobalSkillsDir returns the native global skill directory for a harness.
+func GlobalSkillsDir(name string) (string, error) {
+	h, ok := registry[name]
+	if !ok {
+		return "", fmt.Errorf("unknown harness: %s (available: %s)", name, strings.Join(Names(), ", "))
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, h.SkillDir), nil
 }
 
 // AgentDirs returns all agent directory paths (relative to $HOME) from registered harnesses.

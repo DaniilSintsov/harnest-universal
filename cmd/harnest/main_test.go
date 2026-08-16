@@ -39,6 +39,26 @@ func TestInstallDefaultsToBothTargetsOnCleanHome(t *testing.T) {
 	}
 }
 
+func TestSubcommandHelpHasNoSideEffects(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+
+	for _, command := range []string{"install", "init"} {
+		out, err := runMainCLI(t, home, project, command, "-h")
+		if err != nil {
+			t.Fatalf("%s -h failed: %v\n%s", command, err, out)
+		}
+		if !strings.Contains(out, "Usage:") {
+			t.Fatalf("%s -h missing usage:\n%s", command, out)
+		}
+	}
+	for _, path := range []string{filepath.Join(home, ".claude"), filepath.Join(home, ".codex"), filepath.Join(project, "harnest.yaml")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("help created %s: %v", path, err)
+		}
+	}
+}
+
 func TestNewProjectConfigUsesStrictWorkflowAndAutoConsilium(t *testing.T) {
 	stacks := []detector.Stack{{Name: "go", Lang: "go", Category: "backend", Path: "."}}
 	cfg := newProjectConfig(t.TempDir(), stacks, mapping.Resolve(stacks, nil, "codex"), []string{"codex"})
@@ -132,6 +152,29 @@ func TestProfilesCLIHelper(t *testing.T) {
 		if arg == "--" {
 			os.Args = append([]string{"harnest"}, os.Args[i+1:]...)
 			runProfiles()
+			os.Exit(0)
+		}
+	}
+	os.Exit(2)
+}
+
+func runMainCLI(t *testing.T, home, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], append([]string{"-test.run=TestMainCLIHelper", "--"}, args...)...)
+	cmd.Env = append(os.Environ(), "GO_WANT_HARNEST_MAIN_HELPER=1", "HOME="+home)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func TestMainCLIHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_HARNEST_MAIN_HELPER") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			os.Args = append([]string{"harnest"}, os.Args[i+1:]...)
+			main()
 			os.Exit(0)
 		}
 	}

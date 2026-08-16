@@ -32,6 +32,12 @@ func TestCheckAllowsSchemaV1LegacyConfig(t *testing.T) {
 	}
 }
 
+func TestAgentKnownAcceptsAutoSelection(t *testing.T) {
+	if !agentKnown("auto", nil) {
+		t.Fatal("auto agent must be valid without an installed agent file")
+	}
+}
+
 func driftClaudeConfig() string {
 	return "### Consilium\n| Role | Agent |\n|---|---|\n| architect | general-purpose |\n\n### Executing\n| Agent | Scope |\n|---|---|\n"
 }

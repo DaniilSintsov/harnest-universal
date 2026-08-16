@@ -65,7 +65,11 @@ func InstallAll(harnessName string) error {
 	if err := installGlobalConfig(harnessName, globalDir, configPath); err != nil {
 		return fmt.Errorf("installing global config: %w", err)
 	}
-	if err := installBundledSkills(globalDir); err != nil {
+	skillsDir, err := harness.GlobalSkillsDir(harnessName)
+	if err != nil {
+		return err
+	}
+	if err := installBundledSkills(skillsDir); err != nil {
 		return fmt.Errorf("installing skills: %w", err)
 	}
 	if err := cleanupLegacyProfileRouter(harnessName, globalDir); err != nil {
@@ -271,7 +275,7 @@ func hashListed(hash string, hashes []string) bool {
 	return false
 }
 
-func installBundledSkills(globalDir string) error {
+func installBundledSkills(skillsDir string) error {
 	return fs.WalkDir(assets.Skills, "skills", func(source string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -287,7 +291,7 @@ func installBundledSkills(globalDir string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(globalDir, "skills", rel)
+		target := filepath.Join(skillsDir, rel)
 		if existing, err := os.ReadFile(target); err == nil {
 			if bytes.Equal(existing, data) {
 				return nil

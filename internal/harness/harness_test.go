@@ -31,3 +31,20 @@ func TestRegistryContainsOnlySupportedHarnesses(t *testing.T) {
 		t.Fatal("Get(cursor) succeeded; unsupported harness must be rejected")
 	}
 }
+
+func TestGlobalSkillsDirUsesNativeHarnessPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for name, want := range map[string]string{
+		"claude-code": filepath.Join(home, ".claude", "skills"),
+		"codex":       filepath.Join(home, ".agents", "skills"),
+	} {
+		got, err := GlobalSkillsDir(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("GlobalSkillsDir(%s) = %s, want %s", name, got, want)
+		}
+	}
+}

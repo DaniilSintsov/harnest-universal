@@ -32,14 +32,14 @@ func TestGenerateMaterializesCallablePortableAgentForEverySelectedTarget(t *test
 	}
 	for _, rel := range []string{
 		filepath.Join(".claude", "agents", "architect.md"),
-		filepath.Join(".codex", "agents", "architect.md"),
+		filepath.Join(".codex", "agents", "architect.toml"),
 	} {
 		path := filepath.Join(dir, rel)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("portable target %s missing: %v", rel, err)
 		}
-		if !strings.HasPrefix(string(data), "---\nname: architect\n") {
+		if !strings.Contains(string(data), "name: architect") && !strings.Contains(string(data), `name = "architect"`) {
 			t.Fatalf("portable target %s is not callable: %q", rel, data)
 		}
 		if !containsPath(files, path) {

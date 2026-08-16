@@ -331,8 +331,7 @@ func MatchAgent(discovered []string, keywords []string) string {
 }
 
 // matchWithFallback matches agent from discovered list, with harness-specific fallback.
-// For claude-code: fallback to "general-purpose" (built-in).
-// For other harnesses: no fallback (empty string).
+// Claude Code has a built-in general-purpose agent; other harnesses defer to auto selection.
 func matchWithFallback(discovered []string, keywords []string, harnessName string) string {
 	agent := MatchAgent(discovered, keywords)
 	if agent != "" {
@@ -341,7 +340,7 @@ func matchWithFallback(discovered []string, keywords []string, harnessName strin
 	if harnessName == "claude-code" {
 		return "general-purpose"
 	}
-	return ""
+	return AutoAgent
 }
 
 // matchRole resolves a consilium role agent from discovered agents.

@@ -61,11 +61,11 @@ func TestMatchWithFallback_ClaudeCodeFallback(t *testing.T) {
 	}
 }
 
-func TestMatchWithFallback_CursorNoFallback(t *testing.T) {
-	// No match → cursor gets empty
+func TestMatchWithFallback_NonClaudeUsesAuto(t *testing.T) {
+	// No match → harness selects a compatible agent at execution time.
 	got := matchWithFallback([]string{"unrelated-agent"}, []string{"nonexistent"}, "cursor")
-	if got != "" {
-		t.Errorf("expected empty, got %q", got)
+	if got != AutoAgent {
+		t.Errorf("expected %q, got %q", AutoAgent, got)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestMatchWithFallback_MatchBeforeFallback(t *testing.T) {
 	}
 }
 
-func TestResolveUsesAutoForUnavailableConsiliumRoles(t *testing.T) {
+func TestResolveUsesAutoForUnavailableCodexRoles(t *testing.T) {
 	config := Resolve([]detector.Stack{{Name: "go", Lang: "go", Category: "backend", Path: "."}}, nil, "codex")
 	if len(config.Consilium) == 0 {
 		t.Fatal("consilium is empty")
@@ -87,8 +87,8 @@ func TestResolveUsesAutoForUnavailableConsiliumRoles(t *testing.T) {
 			t.Fatalf("role %s agent = %q, want %q", role.Role, role.Agent, AutoAgent)
 		}
 	}
-	if len(config.Exec) != 0 {
-		t.Fatalf("auto fallback must not assign executing agents: %#v", config.Exec)
+	if len(config.Exec) != 1 || config.Exec[0].Agent != AutoAgent || config.Exec[0].Scope != "**/*.go" {
+		t.Fatalf("Codex exec fallback = %#v, want auto for **/*.go", config.Exec)
 	}
 }
 

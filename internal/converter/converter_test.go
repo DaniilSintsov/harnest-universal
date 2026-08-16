@@ -3,8 +3,11 @@ package converter
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	harnestYaml "github.com/daniilsintsov/harnest-universal/internal/yaml"
 )
 
 func TestConvertReadsExactClaudeSource(t *testing.T) {
@@ -51,6 +54,52 @@ func TestConvertKeepsModelTiersOutOfConsiliumWithoutExecuting(t *testing.T) {
 	content := string(data)
 	if strings.Count(content, "- **architect**:") != 1 || strings.Contains(content, "(high)") {
 		t.Fatalf("model tier was parsed as a consilium agent:\n%s", content)
+	}
+}
+
+func TestConvertUpdatesManagedProjectTarget(t *testing.T) {
+	dir := t.TempDir()
+	writeTestConfig(t, filepath.Join(dir, "CLAUDE.md"), legacyConfig("architect", "legacy-agent"))
+	writeTestConfig(t, filepath.Join(dir, "harnest.yaml"), `version: 2
+project:
+  name: managed-project
+stacks:
+  - name: fastapi
+    lang: python
+    category: backend
+    path: .
+agents:
+  consilium:
+    architect: managed-agent
+  executing:
+    - agent: general-purpose
+      scope: "**/*.py"
+harnesses:
+  - claude-code
+settings:
+  language: ru
+`)
+
+	outPath, err := Convert(dir, "claude-code", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outPath != filepath.Join(dir, "AGENTS.md") {
+		t.Fatalf("output path = %q", outPath)
+	}
+	cfg, err := harnestYaml.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.Harnesses, []string{"codex"}) {
+		t.Fatalf("harnesses = %v, want [codex]", cfg.Harnesses)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "managed-agent") || strings.Contains(string(data), "legacy-agent") {
+		t.Fatalf("converter did not use harnest.yaml as source of truth:\n%s", data)
 	}
 }
 

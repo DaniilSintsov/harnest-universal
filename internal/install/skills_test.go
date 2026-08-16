@@ -9,7 +9,7 @@ import (
 
 func TestInstallBundledSkills(t *testing.T) {
 	dir := t.TempDir()
-	if err := installBundledSkills(dir); err != nil {
+	if err := installBundledSkills(filepath.Join(dir, "skills")); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"harnest-bootstrap", "architecture-context-builder", "project-rules-builder", "compliance-review"} {
@@ -41,7 +41,7 @@ func TestInstallBundledSkillsKeepsHashedBackup(t *testing.T) {
 	if err := os.WriteFile(target, custom, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := installBundledSkills(dir); err != nil {
+	if err := installBundledSkills(filepath.Join(dir, "skills")); err != nil {
 		t.Fatal(err)
 	}
 	backupPath := target + ".pre-" + contentHash(custom)[:12] + ".bak"

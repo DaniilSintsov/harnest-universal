@@ -395,7 +395,7 @@ func agentKnown(agentName string, agentSet map[string]bool) bool {
 
 	// Well-known harness built-in agents that are never installed on disk.
 	switch agentName {
-	case "general-purpose":
+	case mapping.AutoAgent, "general-purpose":
 		return true
 	}
 

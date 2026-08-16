@@ -25,12 +25,16 @@ import (
 	goyaml "gopkg.in/yaml.v3"
 )
 
-var version = "0.12.0-universal.1"
+var version = "0.12.0-universal.2"
 
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
+	}
+	if len(os.Args) > 2 && (hasFlag("--help") || hasFlag("-h")) {
+		printUsage()
+		return
 	}
 
 	switch os.Args[1] {
@@ -60,8 +64,6 @@ func main() {
 		runExport()
 	case "convert":
 		runConvert()
-	case "update":
-		runUpdate()
 	case "local":
 		runLocal()
 	case "config":
@@ -514,18 +516,6 @@ func runConvert() {
 		os.Exit(1)
 	}
 	fmt.Printf("Converted %s → %s: %s\n", from, to, outPath)
-}
-
-// --- update ---
-
-func runUpdate() {
-	fmt.Println("Checking for updates...")
-	err := mapping.Update()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("Agent mappings and profiles are up to date.")
 }
 
 // --- helpers ---
@@ -1191,7 +1181,6 @@ Usage:
   harnest local show
   harnest config show [dir]
   harnest config diff [dir]
-  harnest update
   harnest version
 
 Commands:
@@ -1210,7 +1199,6 @@ Commands:
   local      Manage personal config overrides (.harnest-local.yaml)
   config     View effective (merged) configuration
   convert    Convert a legacy Claude Code agent mapping to another assistant
-  update     Update agent mappings and profiles
 
 Local key paths (harnest local set/unset):
   agents.consilium.<role>  Override consilium agent for a role
