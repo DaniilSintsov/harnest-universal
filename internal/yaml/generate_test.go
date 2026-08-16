@@ -57,6 +57,88 @@ func TestGenerateMaterializesCallablePortableAgentForEverySelectedTarget(t *test
 	}
 }
 
+func TestGenerateRejectsTargetsBeforeWriting(t *testing.T) {
+	for _, targets := range [][]string{nil, {"claude-code", "unknown"}, {"codex", "codex"}} {
+		dir := t.TempDir()
+		cfg := &HarnestConfig{Version: CurrentVersion, Harnesses: targets}
+		if _, err := Generate(dir, cfg); err == nil {
+			t.Fatalf("Generate(%v) unexpectedly succeeded", targets)
+		}
+		for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+				t.Fatalf("Generate(%v) wrote %s: %v", targets, name, err)
+			}
+		}
+	}
+}
+
+func TestGenerateRejectsMalformedAdapterBeforeMaterializingSkills(t *testing.T) {
+	dir := t.TempDir()
+	skill := filepath.Join(dir, ".agents", "skills", "review", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("# Review\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("<!-- harnest-managed:start -->\nbroken\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &HarnestConfig{
+		Version:   CurrentVersion,
+		Harnesses: []string{"claude-code"},
+		Skills:    ResourceBlock{Root: ".agents/skills"},
+	}
+	if _, err := Generate(dir, cfg); err == nil || !strings.Contains(err.Error(), "malformed harnest managed markers") {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".claude", "skills")); !os.IsNotExist(err) {
+		t.Fatalf("preflight wrote skills: %v", err)
+	}
+}
+
+func TestGenerateDryRunPreviewsSkillsAgentsAndProjectNameWithoutWrites(t *testing.T) {
+	dir := t.TempDir()
+	for path, content := range map[string]string{
+		filepath.Join(dir, ".agents", "skills", "review", "SKILL.md"): "# Review\n",
+		filepath.Join(dir, ".agents", "agents", "architect.md"):       "---\nname: architect\ndescription: portable\n---\nUse this role.\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &HarnestConfig{
+		Version:   CurrentVersion,
+		Project:   ProjectInfo{Name: "declared-project"},
+		Harnesses: []string{"claude-code", "codex"},
+		Skills:    ResourceBlock{Root: ".agents/skills"},
+	}
+	preview, err := GenerateDryRun(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(dir, ".claude", "skills", "review", "SKILL.md"),
+		filepath.Join(dir, ".claude", "agents", "architect.md"),
+		filepath.Join(dir, ".codex", "agents", "architect.toml"),
+		filepath.Join(dir, "CLAUDE.md"),
+		filepath.Join(dir, "AGENTS.md"),
+	} {
+		if !containsPath(preview.Files, path) {
+			t.Fatalf("dry-run files miss %s: %v", path, preview.Files)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("dry-run wrote %s: %v", path, err)
+		}
+	}
+	if !strings.Contains(preview.Adapters["claude-code"], "# declared-project") {
+		t.Fatalf("dry-run lost project name: %s", preview.Adapters["claude-code"])
+	}
+}
+
 func containsPath(paths []string, wanted string) bool {
 	for _, path := range paths {
 		if path == wanted {

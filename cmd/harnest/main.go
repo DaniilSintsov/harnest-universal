@@ -25,7 +25,7 @@ import (
 	goyaml "gopkg.in/yaml.v3"
 )
 
-var version = "0.12.0-universal.2"
+var version = "0.12.0-universal.3"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -106,9 +106,6 @@ func resolveInstallTargets(requested string) []string {
 	if requested != "" {
 		return []string{requested}
 	}
-	if installed := harness.Installed("claude-code", "codex"); len(installed) > 0 {
-		return installed
-	}
 	return []string{"claude-code", "codex"}
 }
 
@@ -147,13 +144,7 @@ func runInit() {
 		}
 	}
 
-	targets := []string{harnessName}
-	if harnessName == "" {
-		targets = harness.Installed("claude-code", "codex")
-		if len(targets) == 0 {
-			targets = []string{"claude-code", "codex"}
-		}
-	}
+	targets := resolveInstallTargets(harnessName)
 
 	discovered := agents_pkg.DiscoverPortable(dir)
 	resolutionTarget := "codex"
@@ -188,7 +179,7 @@ func runInit() {
 		fmt.Fprintf(os.Stderr, "error generating config: %v\n", err)
 		os.Exit(1)
 	}
-	if err := harnestYaml.UpdateLocalExclude(dir, files); err != nil {
+	if _, err := harnestYaml.UpdateLocalExclude(dir, files); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not update local Git excludes: %v\n", err)
 	}
 
@@ -243,8 +234,12 @@ func newProjectConfig(dir string, stacks []detector.Stack, agentsCfg mapping.Age
 
 func runProfiles() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: harnest profiles <list|add|edit|remove> [name] [--harness <target>]")
+		fmt.Fprintln(os.Stderr, "usage: harnest profiles <list|add|edit|remove|sync> [name] [--harness <target>]")
 		os.Exit(1)
+	}
+	if os.Args[2] == "sync" {
+		runProfilesSync()
+		return
 	}
 	baseDir, err := resolveProfilesBaseDir(parseFlag("--harness", ""))
 	if err != nil {
@@ -311,6 +306,43 @@ func runProfiles() {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown profiles subcommand: %s\n", os.Args[2])
 		os.Exit(1)
+	}
+}
+
+func runProfilesSync() {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: harnest profiles sync <name> --from <claude-code|codex>")
+		os.Exit(1)
+	}
+	from := parseFlag("--from", "")
+	to := ""
+	switch from {
+	case "claude-code":
+		to = "codex"
+	case "codex":
+		to = "claude-code"
+	default:
+		fmt.Fprintln(os.Stderr, "error: --from must be claude-code or codex")
+		os.Exit(1)
+	}
+	fromDir, err := harness.GlobalDir(from)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	toDir, err := harness.GlobalDir(to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	destination, backup, err := profile.SyncIn(os.Args[3], fromDir, from, toDir, to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Profile '%s' synced %s → %s.\n  → %s\n", os.Args[3], from, to, destination)
+	if backup != "" {
+		fmt.Printf("  backup: %s\n", backup)
 	}
 }
 
@@ -482,7 +514,8 @@ func saveAndGenerate(dir string, cfg *harnestYaml.HarnestConfig) error {
 		return err
 	}
 	if cfg.Settings.LocalDefault {
-		return harnestYaml.UpdateLocalExclude(dir, files)
+		_, err := harnestYaml.UpdateLocalExclude(dir, files)
+		return err
 	}
 	return nil
 }
@@ -661,17 +694,26 @@ func runGenerate() {
 	}
 
 	if hasFlag("--dry-run") {
-		contents, err := harnestYaml.GenerateDryRun(dir, cfg)
+		preview, err := harnestYaml.GenerateDryRun(dir, cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println("Would generate adapter outputs:")
-		for name, content := range contents {
+		names := make([]string, 0, len(preview.Adapters))
+		for name := range preview.Adapters {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			content := preview.Adapters[name]
 			lines := strings.Count(content, "\n")
 			fmt.Printf("  %s (%d lines)\n", name, lines)
 		}
-		fmt.Println("\nPortable-agent materialization is not previewed.")
+		fmt.Println("\nWould affect project files:")
+		for _, path := range preview.Files {
+			fmt.Printf("  %s\n", path)
+		}
 		fmt.Println("No files written. Remove --dry-run to generate.")
 		return
 	}
@@ -692,16 +734,17 @@ func runGenerate() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	changed := false
 	if effective.Settings.LocalDefault {
-		err = harnestYaml.UpdateLocalExclude(dir, files)
+		changed, err = harnestYaml.UpdateLocalExclude(dir, files)
 	} else {
-		err = harnestYaml.UpdateGitignore(dir, files)
+		changed, err = harnestYaml.UpdateGitignore(dir, files)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not update ignore rules: %v\n", err)
-	} else if effective.Settings.LocalDefault {
+	} else if changed && effective.Settings.LocalDefault {
 		fmt.Println("\nUpdated local Git exclude rules")
-	} else {
+	} else if changed {
 		fmt.Println("\nUpdated .gitignore")
 	}
 }
@@ -919,11 +962,10 @@ func runLocal() {
 //   - agents.consilium.<role>   — override a consilium agent
 //   - agents.models.<role>      — override a model tier
 //   - harnesses                 — add a harness to the list
-//   - design_system             — override the design system
 func runLocalSet(dir string) {
 	if len(os.Args) < 5 {
 		fmt.Fprintln(os.Stderr, "usage: harnest local set <key> <value>")
-		fmt.Fprintln(os.Stderr, "  keys: agents.consilium.<role>, agents.models.<role>, harnesses, design_system")
+		fmt.Fprintln(os.Stderr, "  keys: agents.consilium.<role>, agents.models.<role>, harnesses")
 		os.Exit(1)
 	}
 
@@ -965,13 +1007,9 @@ func runLocalSet(dir string) {
 		local.Harnesses = append(local.Harnesses, value)
 		fmt.Printf("Added harness: %s\n", value)
 
-	case key == "design_system":
-		local.DesignSystem = value
-		fmt.Printf("Set design_system = %s\n", value)
-
 	default:
 		fmt.Fprintf(os.Stderr, "unknown key %q\n", key)
-		fmt.Fprintln(os.Stderr, "  supported: agents.consilium.<role>, agents.models.<role>, harnesses, design_system")
+		fmt.Fprintln(os.Stderr, "  supported: agents.consilium.<role>, agents.models.<role>, harnesses")
 		os.Exit(1)
 	}
 
@@ -1018,10 +1056,6 @@ func runLocalUnset(dir string) {
 	case key == "harnesses":
 		local.Harnesses = nil
 		fmt.Println("Cleared harnesses override.")
-
-	case key == "design_system":
-		local.DesignSystem = ""
-		fmt.Println("Unset design_system.")
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown key %q\n", key)
@@ -1165,6 +1199,7 @@ Usage:
   harnest profiles add <name> [--harness <target>]
   harnest profiles edit <name> [--harness <target>]
   harnest profiles remove <name> [--harness <target>]
+  harnest profiles sync <name> --from claude-code|codex
   harnest agents list [dir]
   harnest agents set <role> <agent>
   harnest agents set-model <role> <tier>
@@ -1194,7 +1229,7 @@ Commands:
   verify     Enforce applicable rules against changed files
   learn      Create an inactive rule candidate for review
   export     Export existing config to harnest.yaml
-  profiles   Manage workflow profiles (create custom, edit, list, remove)
+  profiles   Manage workflow profiles (create, edit, list, remove, sync)
   agents     View/modify agent role mappings
   local      Manage personal config overrides (.harnest-local.yaml)
   config     View effective (merged) configuration
@@ -1204,7 +1239,6 @@ Local key paths (harnest local set/unset):
   agents.consilium.<role>  Override consilium agent for a role
   agents.models.<role>     Override model tier for a role (high|medium|low)
   harnesses                Add a harness to the local list
-  design_system            Override the project design system
 
 Flags:
   --harness          Target harness (%s)

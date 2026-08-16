@@ -33,6 +33,20 @@ func TestForkVersionHasReleaseProvenance(t *testing.T) {
 
 func TestInstallDefaultsToBothTargetsOnCleanHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	want := []string{"claude-code", "codex"}
+	if got := resolveInstallTargets(""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolveInstallTargets() = %v, want %v", got, want)
+	}
+}
+
+func TestInstallDefaultsToBothTargetsWhenOneAlreadyExists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(home, ".claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"claude-code", "codex"}
 	if got := resolveInstallTargets(""); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolveInstallTargets() = %v, want %v", got, want)
@@ -139,7 +153,7 @@ func writeTestProfile(t *testing.T, baseDir, name string) {
 func runProfilesCLI(t *testing.T, home string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], append([]string{"-test.run=TestProfilesCLIHelper", "--"}, args...)...)
-	cmd.Env = append(os.Environ(), "GO_WANT_HARNEST_PROFILES_HELPER=1", "HOME="+home)
+	cmd.Env = append(os.Environ(), "GO_WANT_HARNEST_PROFILES_HELPER=1", "HOME="+home, "USERPROFILE="+home)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -161,7 +175,7 @@ func TestProfilesCLIHelper(t *testing.T) {
 func runMainCLI(t *testing.T, home, dir string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], append([]string{"-test.run=TestMainCLIHelper", "--"}, args...)...)
-	cmd.Env = append(os.Environ(), "GO_WANT_HARNEST_MAIN_HELPER=1", "HOME="+home)
+	cmd.Env = append(os.Environ(), "GO_WANT_HARNEST_MAIN_HELPER=1", "HOME="+home, "USERPROFILE="+home)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err

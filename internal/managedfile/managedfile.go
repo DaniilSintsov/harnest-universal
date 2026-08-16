@@ -23,6 +23,27 @@ func WriteAtomic(path string, data []byte, defaultMode os.FileMode) error {
 	return writeAtomic(path, data, mode)
 }
 
+// ValidateUpsert checks managed markers without changing path.
+func ValidateUpsert(path, id string) error {
+	if id == "" || strings.ContainsAny(id, "\r\n") {
+		return fmt.Errorf("invalid managed block id %q", id)
+	}
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	start := fmt.Sprintf("<!-- %s-managed:start -->", id)
+	end := fmt.Sprintf("<!-- %s-managed:end -->", id)
+	startCount, endCount := strings.Count(string(content), start), strings.Count(string(content), end)
+	if startCount != endCount || startCount > 1 || (startCount == 1 && strings.Index(string(content), end) < strings.Index(string(content), start)) {
+		return fmt.Errorf("malformed %s managed markers in %s", id, path)
+	}
+	return nil
+}
+
 // UpsertWithMode uses defaultMode only when path does not exist.
 func UpsertWithMode(path, id, body string, defaultMode os.FileMode) error {
 	if id == "" || strings.ContainsAny(id, "\r\n") {
@@ -105,5 +126,5 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	return replaceFile(tmpPath, path)
 }

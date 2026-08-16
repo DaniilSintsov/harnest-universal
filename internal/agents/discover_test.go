@@ -348,6 +348,7 @@ func TestDiscoverForTargetKeepsPlatformProvenance(t *testing.T) {
 	home := t.TempDir()
 	project := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	writeFile(t, filepath.Join(project, ".agents", "agents", "portable.md"), "---\nname: architect\n---\n")
 	writeFile(t, filepath.Join(project, ".claude", "agents", "claude-only.md"), "---\nname: claude-only\n---\n")
 	writeFile(t, filepath.Join(home, ".codex", "agents", "codex-only.toml"), "# codex")
@@ -570,6 +571,33 @@ func TestMaterializePortableNeverTouchesUnmanagedTargetWhenSourcesMissing(t *tes
 		if string(data) != want {
 			t.Fatalf("unmanaged target %s changed: %q", path, data)
 		}
+	}
+}
+
+func TestPortablePathsPreviewsCleanupWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, ".codex", "agents", "stale.toml")
+	content := "name = \"stale\"\n" + portableCodexOwnershipMarker + "\n"
+	writeFile(t, stale, content)
+
+	paths, err := PortablePaths(dir, []string{"codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(paths, stale+" (remove)") {
+		t.Fatalf("cleanup preview missing: %v", paths)
+	}
+	if got, err := os.ReadFile(stale); err != nil || string(got) != content {
+		t.Fatalf("preview changed stale file: %q, %v", got, err)
+	}
+}
+
+func TestPortablePathsRejectsUnknownOwnershipMarker(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".agents", "agents", "architect.md"), "---\nname: architect\n---\n")
+	writeFile(t, filepath.Join(dir, ".codex", "agents", "architect.toml"), "# harnest-portable-agent:future\n")
+	if _, err := PortablePaths(dir, []string{"codex"}); err == nil || !strings.Contains(err.Error(), "unknown portable-agent ownership marker") {
+		t.Fatalf("PortablePaths() error = %v", err)
 	}
 }
 

@@ -51,7 +51,7 @@ func TestCodexProfilesUseCodexInstructionsAndModels(t *testing.T) {
 		all.WriteString(content)
 	}
 	content := all.String()
-	for _, want := range []string{"AGENTS.md", "sol", "terra", "luna", "Codex subagent workflow"} {
+	for _, want := range []string{"AGENTS.md", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "Codex subagent workflow"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("Codex profiles do not contain %q", want)
 		}

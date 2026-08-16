@@ -7,7 +7,7 @@ CLI остаётся детерминированным: обнаруживае�
 ## Поддержка v1
 
 - Claude Code и Codex: активные adapters.
-- Cursor, Windsurf, OpenCode и Qwen Code: не входят в поддерживаемую v1 matrix. Legacy generators остаются в source без public compatibility guarantees.
+- Cursor, Windsurf, OpenCode и Qwen Code: не входят в поддерживаемую v1 matrix; generators удалены.
 - Русский язык по умолчанию; `settings.language: en` переключает создаваемые workflow-инструкции.
 - Production deploy не входит в default workflow.
 
@@ -28,26 +28,39 @@ cd /path/to/project
 go install github.com/daniilsintsov/harnest-universal/cmd/harnest@latest
 ```
 
-`make release` собирает Darwin, Linux и Windows binaries для x64/arm64 и создаёт `dist/checksums.txt`.
+`make release` собирает Darwin, Linux и Windows binaries для x64/arm64 и создаёт `dist/checksums.txt`. Push tag-а вида `v<version>` запускает GitHub Release workflow; tag обязан совпасть с `make version`.
 
 `harnest install`:
 
-- обнаруживает установленные Claude Code и Codex; на чистой машине ставит оба target-а;
+- без флагов всегда ставит оба target-а — Claude Code и Codex, независимо от уже существующих каталогов;
+- берёт 10 builtin profiles и bundled skills из самого binary, поэтому на чистом компьютере никакие заранее созданные профили не нужны;
 - `--harness claude-code|codex` ограничивает установку одним target-ом;
-- добавляет/обновляет только managed block в `~/.claude/CLAUDE.md` и `~/.codex/AGENTS.md`;
+- учитывает `CLAUDE_CONFIG_DIR` и `CODEX_HOME`; без них использует `~/.claude` и `~/.codex`;
+- добавляет/обновляет только managed block в `<CLAUDE_CONFIG_DIR>/CLAUDE.md` и `<CODEX_HOME>/AGENTS.md`;
 - сохраняет внешний текст, права файла и `.bak`;
 - ставит profiles и portable skills в каталоги выбранных платформ;
 - обновляет неизменённые builtin profiles по checksum state, а пользовательские сохраняет;
 - переносит retired upstream profiles/agents в hash-named recoverable backup только при точном известном checksum;
 - останавливается при повреждённых или дублированных managed markers.
 
-`harnest init` создаёт schema v2 и запускает agent wizard: для каждой consilium-роли и exec scope можно принять предложенного агента, пропустить назначение, найти установленного агента или указать имя вручную. `harnest init --non-interactive` принимает предложения автоматически для CI и scripts. Пути architecture/rules/skills резервируются в config, но используются только если artifacts существуют. Harnest artifacts локальны по умолчанию через `.git/info/exclude`; tracked `.gitignore` не меняется. Глубокий архитектурный onboarding запускается отдельно: `/harnest-bootstrap`.
+`harnest init` без `--harness` всегда создаёт проект для Claude Code и Codex. Команда создаёт schema v2 и запускает agent wizard: для каждой consilium-роли и exec scope можно принять предложенного агента, пропустить назначение, найти установленного агента или указать имя вручную. `harnest init --non-interactive` принимает предложения автоматически для CI и scripts. Пути architecture/rules/skills используются только если artifacts существуют. В Git-репозитории Harnest artifacts локальны по умолчанию через `.git/info/exclude`; tracked `.gitignore` не меняется. Глубокий архитектурный onboarding запускается отдельно: `/harnest-bootstrap`.
 
 Portable agents из Harnest-source `.agents/agents/*.md` материализуются в нативный формат выбранного adapter: `.claude/agents/<name>.md` для Claude Code и `.codex/agents/<name>.toml` для Codex. Codex TOML получает обязательные `name`, `description`, `developer_instructions`; при конфликте существующий target-файл сохраняется как `.bak`, последующие обновления распознаются по managed ownership marker.
 
-Project skills остаются общим нативным source в `.agents/skills`. Global bundled skills ставятся в `~/.claude/skills` для Claude Code и `~/.agents/skills` для Codex.
+Project skills имеют единый редактируемый source в `.agents/skills/<name>/SKILL.md`. Codex читает source напрямую. `harnest generate` зеркалирует каждый skill в `.claude/skills/<name>/` для Claude Code без symlink; target-каталоги помечаются как managed, пользовательские каталоги не перезаписываются. Global bundled skills ставятся в `<CLAUDE_CONFIG_DIR>/skills` для Claude Code и `~/.agents/skills` для Codex; `CODEX_HOME` не меняет официальный global skills path.
 
-`harnest generate --dry-run` показывает только adapter outputs. Materialization и cleanup portable agents в dry-run не previewed.
+`harnest generate --dry-run` валидирует targets и conflicts, показывает adapter outputs, portable agents, project skills и cleanup, но не пишет файлы.
+
+### Кастомный профиль для обеих платформ
+
+Создай профиль в одном source target-е, затем синхронизируй во второй:
+
+```bash
+harnest profiles add my-workflow --harness claude-code
+harnest profiles sync my-workflow --from claude-code
+```
+
+Обратное направление тоже поддерживается: `harnest profiles sync my-workflow --from codex`. Sync адаптирует известные имена инструкций, файлов и моделей (`opus` ↔ `gpt-5.6-sol`, `sonnet` ↔ `gpt-5.6-terra`, `haiku` ↔ `gpt-5.6-luna`); существующая отличающаяся копия сохраняется рядом как hash-named `.bak.<hash>`. Builtin profiles синхронизировать вручную нельзя — их platform-specific версии поддерживает `harnest install`.
 
 `harnest convert --from claude-code --to codex` переключает target в существующем `harnest.yaml`; без него сохраняется legacy-конвертация из `CLAUDE.md`.
 
@@ -124,6 +137,8 @@ settings:
 
 Legacy `version: 1` читается. `harnest migrate` создаёт `harnest.yaml.v1.bak` и атомарно записывает v2.
 
+Поля `design_system`, `profiles`, `settings.lock_file` и `adapters.<name>.models` пока не реализованы. Вместо тихого no-op генерация возвращает явную ошибку с заменяющей командой или полем.
+
 ## Rules и checks
 
 Active rules лежат в `.harnest/rules/*.yaml`:
@@ -157,6 +172,7 @@ harnest generate [dir] [--dry-run]
 harnest doctor [dir]
 harnest verify --changed [dir] [--base <ref>] [--allow <rule-id>]
 harnest profiles list|add|edit|remove [name] [--harness claude-code|codex]
+harnest profiles sync <name> --from claude-code|codex
 harnest learn [dir] --id <id> --statement <text>
 harnest detect [dir]
 harnest drift [dir] # legacy schema v1 only

@@ -8,8 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  test-and-release-build:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -18,6 +22,16 @@ jobs:
           cache: true
       - run: go test ./...
       - run: go vet ./...
+
+  release-build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
       - run: make release
       - name: Verify stamped version
         run: test "$(./dist/harnest-linux-amd64 version)" = "harnest v$(make --no-print-directory version)"

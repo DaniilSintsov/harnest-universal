@@ -11,6 +11,23 @@ import (
 
 type CodexGenerator struct{}
 
+func describeRole(role string) string {
+	descriptions := map[string]string{
+		"architect":   "Architecture, modules, dependencies, SOLID",
+		"frontend":    "UI/UX review, frontend patterns",
+		"ui":          "Visual design, UX, components",
+		"security":    "OWASP, vulnerabilities, auth",
+		"devops":      "Infrastructure, CI/CD, deployment",
+		"api":         "API contracts, REST/GraphQL",
+		"diagnostics": "Logs, stacktraces, debugging",
+		"test":        "Test coverage, quality",
+	}
+	if description, ok := descriptions[role]; ok {
+		return description
+	}
+	return role
+}
+
 func (g *CodexGenerator) Capabilities() ir.Capabilities {
 	return ir.Capabilities{
 		Instructions: ir.Native,

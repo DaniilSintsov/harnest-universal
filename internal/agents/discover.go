@@ -37,22 +37,19 @@ func Discover(projectDir string) []string {
 		}
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return result
-	}
-
 	// 2. Global agents from all registered harness locations
-	for _, dir := range harness.AgentDirs() {
-		scanFlat(filepath.Join(home, dir), "", []string{".md"}, add)
-		for _, name := range scanCodexAgents(filepath.Join(home, dir), "") {
+	for _, dir := range harness.GlobalAgentDirs() {
+		scanFlat(dir, "", []string{".md"}, add)
+		for _, name := range scanCodexAgents(dir, "") {
 			add(name)
 		}
 	}
 
-	// 3. All plugins: walk ~/.claude/plugins/cache/ for plugin.json
-	for _, name := range scanPlugins(filepath.Join(home, ".claude", "plugins", "cache")) {
-		add(name)
+	// 3. All Claude plugins from the active Claude config directory.
+	if claudeDir, err := harness.GlobalDir("claude-code"); err == nil {
+		for _, name := range scanPlugins(filepath.Join(claudeDir, "plugins", "cache")) {
+			add(name)
+		}
 	}
 
 	return result
@@ -151,6 +148,87 @@ func MaterializePortable(projectDir string, targets []string) ([]string, error) 
 		}
 	}
 	return generated, nil
+}
+
+// PortablePaths previews native portable-agent paths without writing files.
+func PortablePaths(projectDir string, targets []string) ([]string, error) {
+	names := DiscoverPortable(projectDir)
+	seen := map[string]bool{}
+	for _, name := range names {
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate portable agent callable name %q", name)
+		}
+		seen[name] = true
+	}
+	var paths []string
+	for _, target := range targets {
+		dir, err := harness.AgentDir(target)
+		if err != nil {
+			return nil, err
+		}
+		extension := ".md"
+		cleanupSuffixes := []string{".md"}
+		if target == "codex" {
+			extension = ".toml"
+			cleanupSuffixes = []string{".toml", ".md"}
+		}
+		desired := make(map[string]bool, len(names))
+		for _, name := range names {
+			if !safeCallableName(name) {
+				return nil, fmt.Errorf("portable agent has unsafe callable name %q", name)
+			}
+			path := filepath.Join(projectDir, dir, name+extension)
+			if content, err := os.ReadFile(path); err == nil {
+				if strings.Contains(string(content), "harnest-portable-agent:") && !hasPortableOwnership(content) {
+					return nil, fmt.Errorf("file has unknown portable-agent ownership marker: %s", path)
+				}
+			} else if !os.IsNotExist(err) {
+				return nil, err
+			}
+			desired[filepath.Clean(path)] = true
+			paths = append(paths, path)
+		}
+		cleanup, err := portableCleanupPaths(filepath.Join(projectDir, dir), desired, cleanupSuffixes)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, cleanup...)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func portableCleanupPaths(dir string, desired map[string]bool, suffixes []string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() || !hasSuffix(entry.Name(), suffixes) || desired[filepath.Clean(path)] {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if !hasPortableOwnership(content) {
+			continue
+		}
+		if _, err := os.Stat(path + ".bak"); err == nil {
+			paths = append(paths, path+" (restore)", path+".bak (remove)")
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		sum := sha256.Sum256(content)
+		paths = append(paths, path+" (remove)", fmt.Sprintf("%s.deleted-%x.bak", path, sum[:6]))
+	}
+	return paths, nil
 }
 
 func safeCallableName(name string) bool {
@@ -365,17 +443,19 @@ func DiscoverForTarget(projectDir, target string) []string {
 			add(name)
 		}
 	}
-	home, err := os.UserHomeDir()
+	globalDir, err := harness.GlobalAgentDir(target)
 	if err == nil {
-		scanFlat(filepath.Join(home, dir), "", []string{".md"}, add)
+		scanFlat(globalDir, "", []string{".md"}, add)
 		if target == "codex" {
-			for _, name := range scanCodexAgents(filepath.Join(home, dir), "") {
+			for _, name := range scanCodexAgents(globalDir, "") {
 				add(name)
 			}
 		}
 		if target == "claude-code" {
-			for _, name := range scanPlugins(filepath.Join(home, ".claude", "plugins", "cache")) {
-				add(name)
+			if claudeDir, configErr := harness.GlobalDir("claude-code"); configErr == nil {
+				for _, name := range scanPlugins(filepath.Join(claudeDir, "plugins", "cache")) {
+					add(name)
+				}
 			}
 		}
 	}

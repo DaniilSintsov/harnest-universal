@@ -19,6 +19,9 @@ func MigrateFile(dir string) (bool, string, error) {
 		return false, "", err
 	}
 	if cfg.Version == CurrentVersion {
+		if err := validateImplementedFields(cfg); err != nil {
+			return false, "", err
+		}
 		return false, "", nil
 	}
 
@@ -34,6 +37,9 @@ func MigrateFile(dir string) (bool, string, error) {
 
 	upgraded, err := Migrate(cfg)
 	if err != nil {
+		return false, backup, err
+	}
+	if err := validateImplementedFields(upgraded); err != nil {
 		return false, backup, err
 	}
 	if err := Save(dir, upgraded); err != nil {
@@ -89,6 +95,9 @@ func BuildIR(dir string, cfg *HarnestConfig) (ir.Project, error) {
 	if err != nil {
 		return ir.Project{}, err
 	}
+	if err := validateImplementedFields(upgraded); err != nil {
+		return ir.Project{}, err
+	}
 	roleSelection := upgraded.Workflow.RoleSelection
 	if roleSelection == "" || roleSelection == ir.RoleSelectionInteractive {
 		roleSelection = ir.RoleSelectionAuto
@@ -129,4 +138,22 @@ func BuildIR(dir string, cfg *HarnestConfig) (ir.Project, error) {
 		return ir.Project{}, fmt.Errorf("loading rules: %w", err)
 	}
 	return project, nil
+}
+
+func validateImplementedFields(cfg *HarnestConfig) error {
+	if cfg.DesignSystem != "" {
+		return fmt.Errorf("design_system is not implemented; remove it from harnest.yaml and .harnest-local.yaml")
+	}
+	if len(cfg.Profiles.Enabled) > 0 || len(cfg.Profiles.Custom) > 0 {
+		return fmt.Errorf("profiles config is not implemented; manage profiles with 'harnest profiles'")
+	}
+	if cfg.Settings.LockFile {
+		return fmt.Errorf("settings.lock_file is not implemented; remove it from harnest.yaml")
+	}
+	for name, adapter := range cfg.Adapters {
+		if len(adapter.Models) > 0 {
+			return fmt.Errorf("adapters.%s.models is not implemented; use agents.models capability tiers", name)
+		}
+	}
+	return nil
 }

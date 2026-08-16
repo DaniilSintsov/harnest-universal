@@ -12,6 +12,7 @@ import (
 func TestInstallAllWritesHarnessSpecificProfiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	for _, test := range []struct {
 		harness   string
@@ -31,7 +32,7 @@ func TestInstallAllWritesHarnessSpecificProfiles(t *testing.T) {
 			harness:   "codex",
 			dir:       ".codex",
 			skillsDir: filepath.Join(".agents", "skills"),
-			want:      []string{"AGENTS.md", "sol", "terra", "luna"},
+			want:      []string{"AGENTS.md", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 			forbidden: []string{"CLAUDE.md", "| opus", "| sonnet", "| haiku"},
 		},
 	} {
@@ -67,9 +68,38 @@ func TestInstallAllWritesHarnessSpecificProfiles(t *testing.T) {
 	}
 }
 
+func TestInstallAllHonorsHarnessConfigDirectories(t *testing.T) {
+	home := t.TempDir()
+	claudeDir := filepath.Join(t.TempDir(), "Claude Config")
+	codexDir := filepath.Join(t.TempDir(), "Codex Config")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	t.Setenv("CODEX_HOME", codexDir)
+
+	for _, target := range []string{"claude-code", "codex"} {
+		if err := InstallAll(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(claudeDir, "CLAUDE.md"),
+		filepath.Join(claudeDir, "profiles", "research.md"),
+		filepath.Join(claudeDir, "skills", "harnest-bootstrap", "SKILL.md"),
+		filepath.Join(codexDir, "AGENTS.md"),
+		filepath.Join(codexDir, "profiles", "research.md"),
+		filepath.Join(home, ".agents", "skills", "harnest-bootstrap", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected install path %s: %v", path, err)
+		}
+	}
+}
+
 func TestInstallAllMigratesClaudeProfileAlreadyInCodex(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	profilesDir := filepath.Join(home, ".codex", "profiles")
 	if err := os.MkdirAll(profilesDir, 0700); err != nil {
 		t.Fatal(err)
@@ -106,6 +136,7 @@ func TestInstallAllMigratesClaudeProfileAlreadyInCodex(t *testing.T) {
 func TestInstallAllRepairsMissingMetaInModifiedBuiltinProfile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	globalDir := filepath.Join(home, ".codex")
 	profilesDir := filepath.Join(globalDir, "profiles")

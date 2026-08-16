@@ -96,7 +96,7 @@ func TestUpdateLocalExcludeDoesNotTouchGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := UpdateLocalExclude(dir, []string{filepath.Join(dir, "AGENTS.md")}); err != nil {
+	if _, err := UpdateLocalExclude(dir, []string{filepath.Join(dir, "AGENTS.md")}); err != nil {
 		t.Fatal(err)
 	}
 	exclude, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
@@ -117,6 +117,13 @@ func TestUpdateLocalExcludeDoesNotTouchGitignore(t *testing.T) {
 	}
 }
 
+func TestUpdateLocalExcludeReportsNoChangeOutsideGitRepository(t *testing.T) {
+	changed, err := UpdateLocalExclude(t.TempDir(), []string{"AGENTS.md"})
+	if err != nil || changed {
+		t.Fatalf("UpdateLocalExclude() = %v, %v", changed, err)
+	}
+}
+
 func TestUpdateLocalExcludeSupportsLinkedWorktree(t *testing.T) {
 	dir := t.TempDir()
 	common := filepath.Join(t.TempDir(), "repo.git")
@@ -131,7 +138,7 @@ func TestUpdateLocalExcludeSupportsLinkedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := UpdateLocalExclude(dir, nil); err != nil {
+	if _, err := UpdateLocalExclude(dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(common, "info", "exclude"))
@@ -160,5 +167,42 @@ func TestBuildIRCarriesControlPlanePaths(t *testing.T) {
 	}
 	if len(got.Targets) != 1 || got.Targets[0] != "codex" {
 		t.Fatalf("unexpected targets: %v", got.Targets)
+	}
+}
+
+func TestBuildIRRejectsUnimplementedConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*HarnestConfig)
+		want string
+	}{
+		{"design system", func(cfg *HarnestConfig) { cfg.DesignSystem = "brand" }, "design_system is not implemented"},
+		{"profiles", func(cfg *HarnestConfig) { cfg.Profiles.Enabled = []string{"research"} }, "profiles config is not implemented"},
+		{"lock file", func(cfg *HarnestConfig) { cfg.Settings.LockFile = true }, "settings.lock_file is not implemented"},
+		{"adapter models", func(cfg *HarnestConfig) {
+			cfg.Adapters = map[string]AdapterSettings{"codex": {Models: map[string]string{"high": "gpt"}}}
+		}, "adapters.codex.models is not implemented"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &HarnestConfig{Version: CurrentVersion, Harnesses: []string{"codex"}}
+			test.edit(cfg)
+			_, err := BuildIR(t.TempDir(), cfg)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("BuildIR() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestMigrateFileRejectsUnimplementedCurrentConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &HarnestConfig{Version: CurrentVersion, Harnesses: []string{"codex"}, Settings: SettingsBlock{LockFile: true}}
+	if err := Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	changed, _, err := MigrateFile(dir)
+	if err == nil || !strings.Contains(err.Error(), "settings.lock_file is not implemented") {
+		t.Fatalf("MigrateFile() = %v, error %v", changed, err)
 	}
 }

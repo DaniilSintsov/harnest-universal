@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -64,6 +65,9 @@ func TestCreateInWritesToTargetBaseDirectory(t *testing.T) {
 }
 
 func TestEditInOpensProfileFromTargetBaseDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script editor fixture is Unix-only")
+	}
 	baseDir := t.TempDir()
 	profilesDir := filepath.Join(baseDir, "profiles")
 	if err := os.Mkdir(profilesDir, 0700); err != nil {
@@ -150,7 +154,7 @@ func TestMigrateInForAdaptsCodexAndKeepsBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(data); got != "See AGENTS.md. Use sol via Codex subagent workflow.\n" {
+	if got := string(data); got != "See AGENTS.md. Use gpt-5.6-sol via Codex subagent workflow.\n" {
 		t.Fatalf("migrated profile = %q", got)
 	}
 	backup, err := os.ReadFile(backupPath)
@@ -264,5 +268,78 @@ func TestRepairBuiltinMetaInNoOpWhenMetaExists(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
 		t.Fatalf("unexpected backup file: %v", err)
+	}
+}
+
+func TestSyncInAdaptsCustomProfileAndBacksUpDestination(t *testing.T) {
+	claudeDir := t.TempDir()
+	codexDir := t.TempDir()
+	for dir, content := range map[string]string{
+		claudeDir: "# Custom\nUse CLAUDE.md, AskUserQuestion, opus, and solution.\n",
+		codexDir:  "old destination\n",
+	} {
+		if err := os.Mkdir(filepath.Join(dir, "profiles"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "profiles", "custom.md"), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	destination, backup, err := SyncIn("custom", claudeDir, "claude-code", codexDir, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# Custom\nUse AGENTS.md, request_user_input, gpt-5.6-sol, and solution.\n"; string(got) != want {
+		t.Fatalf("synced profile = %q, want %q", got, want)
+	}
+	if backup == "" {
+		t.Fatal("expected backup")
+	}
+	if gotBackup, err := os.ReadFile(backup); err != nil || string(gotBackup) != "old destination\n" {
+		t.Fatalf("backup = %q, %v", gotBackup, err)
+	}
+}
+
+func TestSyncInRejectsBuiltin(t *testing.T) {
+	_, _, err := SyncIn("research", t.TempDir(), "claude-code", t.TempDir(), "codex")
+	if err == nil || !strings.Contains(err.Error(), "managed by 'harnest install'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuiltinContentUsesConfiguredRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "codex home")
+	t.Setenv("CODEX_HOME", root)
+
+	content, ok := BuiltinContentFor("coordinator", "codex")
+	if !ok {
+		t.Fatal("missing builtin profile")
+	}
+	want := filepath.ToSlash(filepath.Join(root, "coordinator")) + "/"
+	if !strings.Contains(content, want) {
+		t.Fatalf("configured root missing from profile: want %q", want)
+	}
+	if strings.Contains(content, "~/.codex/") {
+		t.Fatal("default Codex root remained in configured profile")
+	}
+}
+
+func TestAdaptContentBetweenTargets(t *testing.T) {
+	tests := []struct {
+		from, to, input, want string
+	}{
+		{"claude-code", "codex", "CLAUDE.md AskUserQuestion opus solution", "AGENTS.md request_user_input gpt-5.6-sol solution"},
+		{"codex", "claude-code", "AGENTS.md request_user_input gpt-5.6-sol solution", "CLAUDE.md AskUserQuestion opus solution"},
+	}
+	for _, test := range tests {
+		got, err := adaptContentBetween(test.input, test.from, test.to)
+		if err != nil || got != test.want {
+			t.Fatalf("adapt %s → %s = %q, %v; want %q", test.from, test.to, got, err, test.want)
+		}
 	}
 }

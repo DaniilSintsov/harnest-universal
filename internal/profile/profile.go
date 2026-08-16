@@ -3,6 +3,7 @@ package profile
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -55,12 +56,25 @@ var codexProfileReplacer = strings.NewReplacer(
 	"voltagent-плагины", "Codex agents",
 	"builder-spring-feature", "spring-boot-engineer",
 	"kotlin-multiplatform-developer", "kotlin-specialist",
-	"opus", "sol",
-	"sonnet", "terra",
-	"haiku", "luna",
+)
+
+var claudeProfileReplacer = strings.NewReplacer(
+	"~/.codex/", "~/.claude/",
+	"AGENTS.md", "CLAUDE.md",
+	"`request_user_input` (если доступен) или прямой вопрос пользователю", "`AskUserQuestion`",
+	"request_user_input", "AskUserQuestion",
+	"Codex subagent workflow", "Task tool",
+	"file-reading tools", "Read tool",
+	"browser tooling", "playwright-cli",
+	"`explorer`", "`Explore`",
+	"explorer", "Explore",
+	"`default`", "`general-purpose`",
+	"recurring automation", "/loop",
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+var claudeModelName = regexp.MustCompile(`\b(opus|sonnet|haiku)\b`)
+var codexModelName = regexp.MustCompile(`\b(?:gpt-5\.6-)?(sol|terra|luna)\b`)
 
 func ValidateName(name string) error {
 	if !validName.MatchString(name) {
@@ -147,9 +161,105 @@ func BuiltinContentFor(name, harnessName string) (string, bool) {
 
 func adaptContentFor(content, harnessName string) string {
 	if harnessName == "codex" {
-		return codexProfileReplacer.Replace(content)
+		content = replaceModelNames(codexProfileReplacer.Replace(content), true)
 	}
-	return content
+	return adaptConfiguredRoot(content, harnessName)
+}
+
+func adaptContentBetween(content, fromHarness, toHarness string) (string, error) {
+	content = canonicalizeConfiguredRoot(content, fromHarness)
+	if fromHarness == toHarness {
+		return adaptConfiguredRoot(content, toHarness), nil
+	}
+	switch {
+	case fromHarness == "claude-code" && toHarness == "codex":
+		content = replaceModelNames(codexProfileReplacer.Replace(content), true)
+	case fromHarness == "codex" && toHarness == "claude-code":
+		content = replaceModelNames(claudeProfileReplacer.Replace(content), false)
+	default:
+		return "", fmt.Errorf("unsupported profile sync: %s → %s", fromHarness, toHarness)
+	}
+	return adaptConfiguredRoot(content, toHarness), nil
+}
+
+func configuredRoot(harnessName string) (canonical, configured string) {
+	canonical, envName := "~/.claude/", "CLAUDE_CONFIG_DIR"
+	if harnessName == "codex" {
+		canonical, envName = "~/.codex/", "CODEX_HOME"
+	}
+	value := strings.TrimSpace(os.Getenv(envName))
+	if value == "" {
+		return canonical, canonical
+	}
+	abs, err := filepath.Abs(value)
+	if err != nil {
+		return canonical, canonical
+	}
+	return canonical, strings.TrimSuffix(filepath.ToSlash(abs), "/") + "/"
+}
+
+func canonicalizeConfiguredRoot(content, harnessName string) string {
+	canonical, configured := configuredRoot(harnessName)
+	return strings.ReplaceAll(content, configured, canonical)
+}
+
+func adaptConfiguredRoot(content, harnessName string) string {
+	canonical, configured := configuredRoot(harnessName)
+	return strings.ReplaceAll(content, canonical, configured)
+}
+
+func replaceModelNames(content string, toCodex bool) string {
+	if toCodex {
+		content = codexModelName.ReplaceAllStringFunc(content, func(name string) string {
+			return "gpt-5.6-" + strings.TrimPrefix(name, "gpt-5.6-")
+		})
+		models := map[string]string{"opus": "gpt-5.6-sol", "sonnet": "gpt-5.6-terra", "haiku": "gpt-5.6-luna"}
+		return claudeModelName.ReplaceAllStringFunc(content, func(name string) string { return models[name] })
+	}
+	models := map[string]string{"sol": "opus", "terra": "sonnet", "luna": "haiku"}
+	return codexModelName.ReplaceAllStringFunc(content, func(name string) string {
+		return models[strings.TrimPrefix(name, "gpt-5.6-")]
+	})
+}
+
+// SyncIn copies one custom profile between harness homes and adapts platform terms.
+func SyncIn(name, fromBaseDir, fromHarness, toBaseDir, toHarness string) (string, string, error) {
+	if IsBuiltin(name) {
+		return "", "", fmt.Errorf("builtin profile %q is managed by 'harnest install'", name)
+	}
+	sourcePath, err := safePathIn(name, fromBaseDir)
+	if err != nil {
+		return "", "", err
+	}
+	destinationPath, err := safePathIn(name, toBaseDir)
+	if err != nil {
+		return "", "", err
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", "", fmt.Errorf("reading source profile: %w", err)
+	}
+	adapted, err := adaptContentBetween(string(data), fromHarness, toHarness)
+	if err != nil {
+		return "", "", err
+	}
+
+	backupPath := ""
+	if existing, readErr := os.ReadFile(destinationPath); readErr == nil {
+		if !bytes.Equal(existing, []byte(adapted)) {
+			hash := fmt.Sprintf("%x", sha256.Sum256(existing))[:12]
+			backupPath = destinationPath + ".bak." + hash
+			if err := writeBackupOnce(backupPath, existing); err != nil {
+				return "", "", fmt.Errorf("backing up destination profile: %w", err)
+			}
+		}
+	} else if !os.IsNotExist(readErr) {
+		return "", "", readErr
+	}
+	if err := managedfile.WriteAtomic(destinationPath, []byte(adapted), 0600); err != nil {
+		return "", "", fmt.Errorf("writing destination profile: %w", err)
+	}
+	return destinationPath, backupPath, nil
 }
 
 func List() ([]string, error) {
@@ -210,13 +320,8 @@ func InstallToFor(name, baseDir, harnessName string) error {
 	}
 
 	path := filepath.Join(dir, name+".md")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
+	if err := managedfile.WriteAtomic(path, []byte(content), 0600); err != nil {
 		return fmt.Errorf("writing profile: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming profile: %w", err)
 	}
 
 	fmt.Printf("  → %s\n", path)
@@ -528,13 +633,8 @@ func CreateIn(name, baseDir string, r *bufio.Reader) error {
 		return fmt.Errorf("creating profiles dir: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
+	if err := managedfile.WriteAtomic(path, []byte(content), 0600); err != nil {
 		return fmt.Errorf("writing profile: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming profile: %w", err)
 	}
 
 	fmt.Printf("\nProfile '%s' created.\n", name)

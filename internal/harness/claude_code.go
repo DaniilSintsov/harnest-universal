@@ -28,7 +28,10 @@ func (g *ClaudeCodeGenerator) Generate(projectDir string, project ir.Project) (s
 	var b strings.Builder
 	stacks, agents := project.Stacks, project.Agents
 
-	projectName := filepath.Base(projectDir)
+	projectName := project.Name
+	if projectName == "" {
+		projectName = filepath.Base(projectDir)
+	}
 
 	b.WriteString(fmt.Sprintf("# %s\n\n", projectName))
 

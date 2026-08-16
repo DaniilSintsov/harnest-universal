@@ -3,6 +3,7 @@ package managedfile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -33,7 +34,7 @@ func TestUpsertPreservesUserContentAndMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0644 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0644 {
 		t.Fatalf("mode = %o, want 644", got)
 	}
 
@@ -107,5 +108,26 @@ func TestUpsertNoOpPreservesBackup(t *testing.T) {
 	}
 	if string(backup) != "user text\n" {
 		t.Fatalf("no-op install replaced backup: %q", backup)
+	}
+}
+
+func TestWriteAtomicReplacesExistingFileInPortablePath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "config with spaces", "юникод")
+	path := filepath.Join(dir, "settings.md")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAtomic(path, []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("content = %q, want new", data)
 	}
 }

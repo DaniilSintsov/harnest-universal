@@ -21,18 +21,22 @@ type capabilityProvider interface {
 // HarnessInfo holds metadata about a harness for agent discovery.
 type HarnessInfo struct {
 	Generator Generator
-	// AgentDir is the relative path under $HOME where this harness stores custom agents.
+	// AgentDir is the project-relative path where this harness stores custom agents.
 	// Empty means no custom agent dir.
 	AgentDir string
-	// SkillDir is the relative path under $HOME where this harness discovers skills.
-	SkillDir string
+	// ProjectSkillsDir is the native project-relative skill directory.
+	ProjectSkillsDir string
+	// ConfigEnv overrides the harness global config directory.
+	ConfigEnv string
+	// DefaultConfigDir is the config directory relative to the user home.
+	DefaultConfigDir string
 	// GlobalConfigFile is the filename for this harness's global config.
 	GlobalConfigFile string
 }
 
 var registry = map[string]HarnessInfo{
-	"claude-code": {Generator: &ClaudeCodeGenerator{}, AgentDir: ".claude/agents", SkillDir: ".claude/skills", GlobalConfigFile: "CLAUDE.md"},
-	"codex":       {Generator: &CodexGenerator{}, AgentDir: ".codex/agents", SkillDir: ".agents/skills", GlobalConfigFile: "AGENTS.md"},
+	"claude-code": {Generator: &ClaudeCodeGenerator{}, AgentDir: ".claude/agents", ProjectSkillsDir: ".claude/skills", ConfigEnv: "CLAUDE_CONFIG_DIR", DefaultConfigDir: ".claude", GlobalConfigFile: "CLAUDE.md"},
+	"codex":       {Generator: &CodexGenerator{}, AgentDir: ".codex/agents", ProjectSkillsDir: ".agents/skills", ConfigEnv: "CODEX_HOME", DefaultConfigDir: ".codex", GlobalConfigFile: "AGENTS.md"},
 }
 
 func Get(name string) (Generator, error) {
@@ -65,23 +69,24 @@ func Names() []string {
 	return names
 }
 
-// GlobalDir returns the absolute path to a harness's home directory.
-// Derived from AgentDir's parent joined with $HOME.
+// GlobalDir returns the absolute path to a harness's config directory.
 func GlobalDir(name string) (string, error) {
 	h, ok := registry[name]
 	if !ok {
 		return "", fmt.Errorf("unknown harness: %s (available: %s)", name, strings.Join(Names(), ", "))
 	}
-	if h.AgentDir == "" {
-		return "", fmt.Errorf("harness %s has no agent dir configured", name)
+	if configured := strings.TrimSpace(os.Getenv(h.ConfigEnv)); configured != "" {
+		path, err := filepath.Abs(configured)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", h.ConfigEnv, err)
+		}
+		return filepath.Clean(path), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	// AgentDir is like ".claude/agents" — parent is ".claude".
-	parent := filepath.Dir(h.AgentDir)
-	return filepath.Join(home, parent), nil
+	return filepath.Join(home, h.DefaultConfigDir), nil
 }
 
 // GlobalConfigPath returns the absolute path to a harness's global config file.
@@ -99,15 +104,41 @@ func GlobalConfigPath(name string) (string, error) {
 
 // GlobalSkillsDir returns the native global skill directory for a harness.
 func GlobalSkillsDir(name string) (string, error) {
-	h, ok := registry[name]
-	if !ok {
+	if _, ok := registry[name]; !ok {
 		return "", fmt.Errorf("unknown harness: %s (available: %s)", name, strings.Join(Names(), ", "))
+	}
+	if name == "claude-code" {
+		dir, err := GlobalDir(name)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, "skills"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return filepath.Join(home, h.SkillDir), nil
+	return filepath.Join(home, ".agents", "skills"), nil
+}
+
+// GlobalAgentDir returns the native global agent directory for one harness.
+func GlobalAgentDir(name string) (string, error) {
+	dir, err := GlobalDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "agents"), nil
+}
+
+// GlobalAgentDirs returns all configured native global agent directories.
+func GlobalAgentDirs() []string {
+	var dirs []string
+	for _, name := range Names() {
+		if dir, err := GlobalAgentDir(name); err == nil {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 // AgentDirs returns all agent directory paths (relative to $HOME) from registered harnesses.
@@ -129,6 +160,15 @@ func AgentDir(name string) (string, error) {
 		return "", fmt.Errorf("unknown harness: %s", name)
 	}
 	return h.AgentDir, nil
+}
+
+// ProjectSkillsDir returns the native project-relative skill directory.
+func ProjectSkillsDir(name string) (string, error) {
+	h, ok := registry[name]
+	if !ok {
+		return "", fmt.Errorf("unknown harness: %s", name)
+	}
+	return h.ProjectSkillsDir, nil
 }
 
 // Installed returns harnesses whose global directory already exists.
