@@ -7,3 +7,4 @@ harnest-linux-*
 .idea
 .codegraph
 bin/
+.specs/
