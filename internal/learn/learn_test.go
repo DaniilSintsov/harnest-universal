@@ -2,6 +2,7 @@ package learn
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,7 +17,7 @@ func TestProposeCreatesInactiveCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "learned-candidate") || !strings.Contains(path, "/candidates/") {
+	if !strings.Contains(string(data), "learned-candidate") || !strings.Contains(filepath.ToSlash(path), "/candidates/") {
 		t.Fatalf("unexpected candidate: %s\n%s", path, data)
 	}
 }
