@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Rules Builder"
+  short_description: "Propose scoped enforceable project rules"
+  default_prompt: "Use $project-rules-builder to propose scoped Harnest rules for this repository."

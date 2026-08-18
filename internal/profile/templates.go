@@ -1,16 +1,86 @@
 package profile
 
-// Embedded profile templates.
-// These are role-based (no hardcoded agents).
-// Each profile includes a ## Meta section for autodiscovery.
+// Canonical builtin profiles are Claude Code variants. Codex content is rendered
+// from these templates so both harnesses keep one source of truth.
+
+const bugHunting = `# Profile: Bug Hunting
+
+## Meta
+- **Keywords:** баг, ошибка, краш, не работает, regression, bug, fix
+- **Description:** Баг, регрессия, краш, неожиданное поведение
+
+
+## Workflow (STRICT)
+
+### Stages
+1. **Reproduce** — reproduce the bug
+2. **Diagnose** — consilium finds root cause
+3. **Plan** — minimal root-cause fix plan
+4. **Fix** — write fix
+5. **Smoke Test** — run smoke scenarios (mandatory for mobile changes)
+6. **Validation** — verify fix, check regressions
+7. **Report** — summary
+8. **Done**
+
+### Allowed transitions
+` + "`" + `` + "`" + `` + "`" + `
+Reproduce  -> Diagnose
+Reproduce  -> Report         (not reproducible)
+Diagnose   -> Plan
+Diagnose   -> Reproduce
+Diagnose   -> Report         (diagnosis only)
+Plan       -> Fix
+Plan       -> Diagnose
+Fix        -> Smoke Test     (mobile changes)
+Fix        -> Validation     (backend only)
+Fix        -> Diagnose
+Smoke Test -> Validation
+Smoke Test -> Fix
+Validation -> Report
+Validation -> Fix
+Validation -> Diagnose
+Report     -> Done
+` + "`" + `` + "`" + `` + "`" + `
+
+### Diagnose — Agent consilium
+
+| Role           | Responsibility                        |
+|----------------|---------------------------------------|
+| ` + "`" + `diagnostics` + "`" + `  | Logs, stacktraces, instrumentation    |
+| ` + "`" + `architect` + "`" + `    | Architectural causes, module deps     |
+| ` + "`" + `security` + "`" + `     | Vulnerabilities, leaks, auth issues   |
+| ` + "`" + `devops` + "`" + `       | Infra, environment, configs           |
+
+### Fix
+Agent determined by affected files via exec table in project CLAUDE.md.
+`
 
 const businessFeature = `# Profile: Business Feature
 
 ## Meta
-- **Keywords:** фича, добавить, реализовать, новый экран, интеграция, API endpoint, feature, implement
+- **Keywords:** фича, добавить, реализовать, интеграция, feature, implement
 - **Description:** Новая функциональность, доработка, интеграция
 
+
 ## Workflow (STRICT)
+
+### Git branching (STRICT)
+
+Работаем **в текущей папке репозитория** — без worktree.
+
+Перед созданием feature-ветки ОБЯЗАТЕЛЬНО спросить пользователя через ` + "`" + `AskUserQuestion` + "`" + `:
+- "От какой ветки бранчеваться?" (options: список актуальных release-веток + main)
+
+Порядок:
+1. Если есть незакоммиченные изменения — спросить пользователя что с ними делать (stash / commit / abort). НЕ дропать автоматически.
+2. ` + "`" + `git fetch origin <base-branch>` + "`" + `
+3. ` + "`" + `git checkout -b feature/<slug> origin/<base-branch>` + "`" + ` (для багов: ` + "`" + `fix/<slug>` + "`" + `)
+4. Работа ведётся в текущей папке. Worktree НЕ создаётся.
+
+ЗАПРЕЩЕНО:
+- ` + "`" + `git worktree add ...` + "`" + ` — worktree больше не используем
+- Коммитить напрямую в base-branch
+- Создавать ветку не от ` + "`" + `origin/<base-branch>` + "`" + `
 
 ### Stages
 1. **Research** — consilium analyzes task, codebase, dependencies
@@ -20,10 +90,18 @@ const businessFeature = `# Profile: Business Feature
 5. **Report** — summary
 6. **Done**
 
+### Flow mode (STRICT)
+
+By default — **continuous flow**: all stages execute without pauses or confirmations.
+Stop between stages ONLY if:
+1. User explicitly asked for a stop point
+2. A stage requires user input that cannot be inferred (e.g., git branching)
+
+Do NOT ask "proceed to next stage?" — just go.
+
 ### Allowed transitions
-` + "```" + `
+` + "`" + `` + "`" + `` + "`" + `
 Research   -> Plan
-Research   -> Executing
 Plan       -> Executing
 Executing  -> Validation
 Executing  -> Research
@@ -31,7 +109,7 @@ Validation -> Report
 Validation -> Executing
 Validation -> Research
 Report     -> Done
-` + "```" + `
+` + "`" + `` + "`" + `` + "`" + `
 
 ### Agents per stage
 
@@ -48,14 +126,29 @@ Report     -> Done
 
 All agents run **in parallel** via Task tool. Each role resolves to a concrete agent through project CLAUDE.md.
 
-| Role          | Responsibility                   |
-|---------------|----------------------------------|
-| ` + "`architect`" + `   | Architecture, modules, deps      |
-| ` + "`frontend`" + `    | UI/UX, frontend patterns         |
-| ` + "`ui`" + `          | Visual design, UX, components    |
-| ` + "`security`" + `    | OWASP, vulnerabilities, auth     |
-| ` + "`devops`" + `      | Infra, CI/CD, deployment         |
-| ` + "`api`" + `         | API contracts, REST/GraphQL      |
+| Role        | Responsibility                |
+| ----------- | ----------------------------- |
+| ` + "`" + `architect` + "`" + ` | Architecture, modules, deps   |
+| ` + "`" + `frontend` + "`" + `  | UI/UX, frontend patterns      |
+| ` + "`" + `ui` + "`" + `        | Visual design, UX, components |
+| ` + "`" + `security` + "`" + `  | OWASP, vulnerabilities, auth  |
+| ` + "`" + `devops` + "`" + `    | Infra, CI/CD, deployment      |
+| ` + "`" + `api` + "`" + `       | API contracts, REST/GraphQL   |
+
+### Validation (MANDATORY — НЕЛЬЗЯ ПРОПУСКАТЬ)
+
+**Стадия Validation ОБЯЗАТЕЛЬНА для каждой фичи. Ни один агент не имеет права пропустить её.**
+
+Причины пропуска НЕ принимаются:
+- "нет тестов" → написать тесты
+- "не настроен CI" → проверить вручную через Bash
+- "только рефакторинг" → всё равно проверить что ничего не сломалось
+- "маленькое изменение" → маленькие изменения ломают продакшн
+
+**Платформы определяются АВТОМАТИЧЕСКИ** по затронутым файлам — НЕ спрашивать пользователя.
+Таблица маппинга и полный порядок проверок описаны в глобальном CLAUDE.md → секция "Validation — общий порядок работы".
+
+Если Executing не затронул ни одного файла (отмена, откат) — Validation пропускается, переход сразу к Report с пометкой "No changes — validation skipped".
 
 ### Executing
 
@@ -73,127 +166,540 @@ If task touches multiple layers — run multiple exec agents in parallel.
 - Status: Done / Partial
 `
 
-const bugHunting = `# Profile: Bug Hunting
+const codeReview = `# Profile: Code Review
 
 ## Meta
-- **Keywords:** баг, ошибка, краш, не работает, ломается, исключение, stacktrace, NPE, 500, regression, bug, fix
-- **Description:** Баг, регрессия, краш, неожиданное поведение
+- **Keywords:** ревью, review, PR, pull request, проверь diff
+- **Description:** Read-only ревью изменений и PR
+
+
+Ревью PR консилиумом агентов. Анализ diff на архитектуру, безопасность, API, code quality, инфра и языковые нормы.
 
 ## Workflow (STRICT)
 
 ### Stages
-1. **Reproduce** — reproduce the bug
-2. **Diagnose** — consilium finds root cause
-3. **Fix** — write fix
-4. **Smoke Test** — run smoke scenarios (mandatory for mobile changes)
-5. **Validation** — verify fix, check regressions
-6. **Report** — summary
-7. **Done**
+1. **Collect** — получить diff PR, определить стек и затронутые модули
+2. **Consilium** — параллельный запуск 6 ролей по diff
+3. **Triage** — группировка находок по severity
+4. **Report** — отчёт пользователю, ожидание реакции
+5. **Done**
+
+### Flow mode
+Stages 1→2→3→4 выполняются без пауз. Остановка ТОЛЬКО на Stage 4 — ожидание реакции пользователя.
 
 ### Allowed transitions
-` + "```" + `
-Reproduce  -> Diagnose
-Reproduce  -> Report         (not reproducible)
-Diagnose   -> Fix
-Diagnose   -> Reproduce
-Diagnose   -> Report         (diagnosis only)
-Fix        -> Smoke Test     (mobile changes)
-Fix        -> Validation     (backend only)
-Fix        -> Diagnose
-Smoke Test -> Validation
-Smoke Test -> Fix
-Validation -> Report
-Validation -> Fix
-Validation -> Diagnose
+` + "`" + `` + "`" + `` + "`" + `
+Collect    -> Consilium
+Consilium  -> Triage
+Triage     -> Report
 Report     -> Done
-` + "```" + `
+` + "`" + `` + "`" + `` + "`" + `
 
-### Diagnose — Agent consilium
+---
 
-| Role           | Responsibility                        |
-|----------------|---------------------------------------|
-| ` + "`diagnostics`" + `  | Logs, stacktraces, instrumentation    |
-| ` + "`architect`" + `    | Architectural causes, module deps     |
-| ` + "`security`" + `     | Vulnerabilities, leaks, auth issues   |
-| ` + "`devops`" + `       | Infra, environment, configs           |
+## Stage 1: Collect
 
-### Fix
-Agent determined by affected files via exec table in project CLAUDE.md.
+Оркестратор собирает входные данные БЕЗ вопросов пользователю.
+
+**Алгоритм:**
+
+1. Определить PR — пользователь указал номер/URL, или текущая ветка:
+   ` + "`" + `` + "`" + `` + "`" + `bash
+   # Если номер PR указан:
+   gh pr diff <number>
+   gh pr view <number> --json title,body,baseRefName,headRefName,files
+
+   # Если не указан — текущая ветка:
+   BRANCH=$(git branch --show-current)
+   BASE=$(gh pr view --json baseRefName -q '.baseRefName' 2>/dev/null || echo "main")
+   git diff $BASE..HEAD
+   ` + "`" + `` + "`" + `` + "`" + `
+
+2. Получить список затронутых файлов и их полное содержимое **как контекст** (НЕ для ревью — только чтобы агенты понимали окружающий код):
+   ` + "`" + `` + "`" + `` + "`" + `bash
+   gh pr diff <number> --name-only   # список файлов
+   ` + "`" + `` + "`" + `` + "`" + `
+   Для каждого файла — прочитать полную версию через Read tool.
+
+3. Определить стек по файлам (аналогично refactoring Stage 0):
+   - ` + "`" + `*.kt` + "`" + ` в ` + "`" + `backend/` + "`" + ` → ` + "`" + `spring-boot` + "`" + `
+   - ` + "`" + `*.kt` + "`" + ` в ` + "`" + `mobile/` + "`" + ` или ` + "`" + `composeApp/` + "`" + ` → ` + "`" + `kotlin-multiplatform` + "`" + `
+   - ` + "`" + `*.vue` + "`" + `, ` + "`" + `*.ts` + "`" + `, ` + "`" + `*.tsx` + "`" + ` → ` + "`" + `vue3` + "`" + ` / ` + "`" + `react` + "`" + `
+   - ` + "`" + `*.swift` + "`" + ` → ` + "`" + `swift` + "`" + `
+   - ` + "`" + `Dockerfile` + "`" + `, ` + "`" + `*.yml` + "`" + ` в ` + "`" + `.github/` + "`" + `, ` + "`" + `nginx/` + "`" + ` → ` + "`" + `infra` + "`" + `
+
+4. Прочитать проектный ` + "`" + `CLAUDE.md` + "`" + ` → секция ` + "`" + `## Agents` + "`" + ` для маппинга ролей.
+
+**Результат Stage 1:** diff, полные файлы, tech_stack, agent mapping.
+
+---
+
+## Stage 2: Consilium
+
+6 ролей запускаются **параллельно** через Task tool. Каждая получает:
+1. Diff PR (что изменилось)
+2. Полное содержимое затронутых файлов (контекст)
+3. Описание PR (title + body)
+4. Свой чеклист (universal + stack-specific)
+
+### Роли
+
+| Role | Что проверяет |
+|------|---------------|
+| ` + "`" + `architect` + "`" + ` | SOLID, слоёная архитектура, зависимости, god classes, циклические зависимости, нарушение boundaries |
+| ` + "`" + `security` + "`" + ` | OWASP Top 10, hardcoded secrets, SQL/XSS injection, missing auth checks, exposed internals, insecure crypto |
+| ` + "`" + `api` + "`" + ` | Контракты API, валидация входных данных, naming consistency, error responses, breaking changes, backward compatibility |
+| ` + "`" + `diagnostics` + "`" + ` | Dead code, дублирование, unreachable branches, magic numbers, deep nesting, long methods, unused imports |
+| ` + "`" + `devops` + "`" + ` | Dockerfile, CI/CD конфиги, nginx, env variables, secrets management, deployment risks |
+| ` + "`" + `developer` + "`" + ` | Языковые идиомы, best practices стека, anti-patterns, корректность типов, naming conventions, код-стиль проекта |
+
+### Stack-specific чеклисты для ` + "`" + `developer` + "`" + `
+
+| Stack | Additional checks |
+|-------|-------------------|
+| ` + "`" + `spring-boot` + "`" + ` | Корректность корутин (suspend vs blocking), правильное использование R2DBC (не JDBC), WebFlux patterns, @Transactional scope, value classes для ID |
+| ` + "`" + `kotlin-multiplatform` + "`" + ` | expect/actual корректность, Compose state management (remember vs ViewModel), Kodein DI scope, Navigation Compose patterns |
+| ` + "`" + `vue3` + "`" + ` | Composition API idiomatic usage, ref vs reactive, computed vs watch, правильный lifecycle |
+| ` + "`" + `react` + "`" + ` | Hooks rules, memo/useMemo/useCallback usage, key prop, state lifting |
+| ` + "`" + `swift` + "`" + ` | Actor isolation, Sendable, async/await patterns, optional handling |
+
+### Prompt для каждого агента
+
+` + "`" + `` + "`" + `` + "`" + `
+Code Review PR.
+
+PR title: <title>
+PR description: <body>
+Base branch: <base> → <head>
+Стек проекта: <tech_stack>
+
+## Diff
+<diff>
+
+## Полные файлы (контекст)
+<full file contents>
+
+---
+
+Проверь изменения по чеклисту:
+<universal_checklist для роли>
+<stack_specific_checklist для роли>
+
+## SCOPE ОГРАНИЧЕНИЕ (СТРОГО)
+
+Ревьюируй ТОЛЬКО код, изменённый в этом PR (строки в diff).
+Полные файлы даны ИСКЛЮЧИТЕЛЬНО как контекст — чтобы понять окружающий код.
+
+ЗАПРЕЩЕНО:
+- Репортить проблемы в коде, который PR НЕ трогал
+- Предлагать рефакторинг существующего кода вне diff
+- Добавлять замечания к строкам, не затронутым PR
+- Репортить pre-existing issues (проблемы, существовавшие до PR)
+
+РАЗРЕШЕНО репортить проблему в НЕизменённой строке ТОЛЬКО если:
+- Изменение в PR ЛОМАЕТ эту строку (вызывает баг, крэш, race condition)
+- Изменение в PR создаёт НОВУЮ уязвимость через взаимодействие с этой строкой
+
+Тест: "Эта проблема ПОЯВИЛАСЬ из-за PR или СУЩЕСТВОВАЛА до него?"
+- Появилась → репортить
+- Существовала → НЕ репортить
+
+Формат ответа — СТРОГО:
+Для КАЖДОЙ находки:
+- file: <path>
+- line: <number or range>
+- severity: blocker | critical | major | minor | info
+- caused_by_pr: yes | indirect (PR breaks existing code)
+- issue: <краткое описание проблемы>
+- suggestion: <как исправить, конкретный код или подход>
+
+Если нарушений нет — ответить "No issues found".
+` + "`" + `` + "`" + `` + "`" + `
+
+**Субагенты:** роли резолвятся через проектный CLAUDE.md → Consilium mapping. Fallback → defaults из глобального CLAUDE.md.
+
+**Роль ` + "`" + `developer` + "`" + ` — резолвинг:**
+1. Проектный CLAUDE.md → секция Consilium → роль ` + "`" + `developer` + "`" + `
+2. Если не найдена — автодетект по стеку:
+   - ` + "`" + `spring-boot` + "`" + ` → ` + "`" + `builder-spring-feature` + "`" + `
+   - ` + "`" + `kotlin-multiplatform` + "`" + ` → ` + "`" + `kotlin-multiplatform-developer` + "`" + `
+   - ` + "`" + `vue3` + "`" + ` → ` + "`" + `voltagent-lang:vue-expert` + "`" + `
+   - ` + "`" + `react` + "`" + ` → ` + "`" + `voltagent-lang:react-specialist` + "`" + `
+   - ` + "`" + `swift` + "`" + ` → ` + "`" + `voltagent-lang:swift-expert` + "`" + `
+   - fallback → ` + "`" + `voltagent-lang:typescript-pro` + "`" + `
+
+**Результат Stage 2:** structured findings от каждой роли.
+
+---
+
+## Stage 3: Triage
+
+Оркестратор собирает ВСЕ находки от 6 ролей. Дедупликация + группировка по severity.
+
+### Severity criteria
+
+| Severity | Criteria | Action |
+|----------|----------|--------|
+| Blocker | Баг, крэш, data loss, security hole — PR нельзя мержить | Обязателен фикс |
+| Critical | Архитектурное нарушение, breaking change, серьёзный anti-pattern | Настоятельно рекомендован фикс |
+| Major | Нарушение конвенций проекта, missing validation, code smell | Рекомендован фикс |
+| Minor | Стилистика, naming, мелкие улучшения | Опционально |
+| Info | Наблюдения, предложения по улучшению, не блокируют PR | К сведению |
+
+### Фильтрация pre-existing issues (ОБЯЗАТЕЛЬНО)
+
+Перед дедупликацией — отфильтровать находки, НЕ связанные с PR:
+
+1. Каждая находка должна иметь ` + "`" + `caused_by_pr: yes | indirect` + "`" + `
+2. Находки БЕЗ этого поля или с неявной связью — УДАЛИТЬ
+3. Тест: если откатить PR (` + "`" + `git revert` + "`" + `) — проблема исчезнет? Да → оставить. Нет → удалить.
+
+### Дедупликация
+Если несколько ролей нашли одну и ту же проблему в одном файле/строке — оставить одну находку с максимальным severity, указав все роли-источники.
+
+**Результат Stage 3:** filtered + deduplicated + sorted findings.
+
+---
+
+## Stage 4: Report
+
+Показать пользователю structured отчёт. Формат:
+
+` + "`" + `` + "`" + `` + "`" + `markdown
+## Code Review: <PR title>
+
+**PR:** #<number> (<base> ← <head>)
+**Файлов затронуто:** <N>
+**Стек:** <tech_stack>
+
+### Verdict: APPROVE / REQUEST_CHANGES / COMMENT
+
+---
+
+### Blocker (<count>)
+1. **[security]** ` + "`" + `file.kt:42` + "`" + ` — SQL injection via string concat
+   → Использовать parameterized query: ` + "`" + `WHERE id = :id` + "`" + `
+
+### Critical (<count>)
+...
+
+### Major (<count>)
+...
+
+### Minor (<count>)
+...
+
+### Info (<count>)
+...
+
+---
+
+**Summary:** <N> findings (B blocker, C critical, M major, m minor, i info)
+` + "`" + `` + "`" + `` + "`" + `
+
+### Verdict logic
+- Есть хотя бы 1 ` + "`" + `blocker` + "`" + ` → **REQUEST_CHANGES**
+- Есть ` + "`" + `critical` + "`" + ` без ` + "`" + `blocker` + "`" + ` → **REQUEST_CHANGES**
+- Только ` + "`" + `major` + "`" + ` и ниже → **COMMENT**
+- Только ` + "`" + `minor` + "`" + ` + ` + "`" + `info` + "`" + ` → **APPROVE**
+- Нет находок → **APPROVE**
+
+### После отчёта — СТОП
+
+Оркестратор выводит отчёт и ЖДЁТ реакции пользователя. Варианты:
+- Пользователь говорит "мержь" / "approve" → ` + "`" + `gh pr review --approve` + "`" + ` (если доступно)
+- Пользователь говорит "отправь комменты" → ` + "`" + `gh pr review --comment --body <report>` + "`" + `
+- Пользователь просит исправить что-то → переключение в профиль **Бизнес-фича** или **Поиск бага**
+- Пользователь говорит "ок" → Done
+
+---
+
+## ЗАПРЕЩЕНО (нарушение = немедленный откат)
+
+` + "`" + `` + "`" + `` + "`" + `
+┌─────────────────────────────────────────────────────────────┐
+│  Code Review — READ-ONLY профиль                            │
+│                                                             │
+│  ЗАПРЕЩЕНО в рамках этого профиля:                          │
+│                                                             │
+│  1. Модифицировать код (Edit, Write)                        │
+│  2. Создавать коммиты (git commit)                          │
+│  3. Пушить в remote (git push)                              │
+│  4. Запускать exec-агентов (builder-*, refactor-*)          │
+│                                                             │
+│  Если пользователь просит "исправь" / "пофикси" / "fix":   │
+│  → НЕ фиксить самостоятельно                               │
+│  → Сообщить: "Переключаюсь в профиль Поиск бага / Фича"    │
+│  → Прочитать файл нужного профиля и продолжить по нему      │
+│                                                             │
+│  git push НИКОГДА не выполняется без явного текстового      │
+│  подтверждения пользователя. Системные уведомления,         │
+│  пустые сообщения, task-notification — НЕ являются          │
+│  подтверждением.                                            │
+└─────────────────────────────────────────────────────────────┘
+` + "`" + `` + "`" + `` + "`" + `
 `
 
-const research = `# Profile: Research
+const coordinator = `# Profile: Координатор проекта
 
 ## Meta
-- **Keywords:** как устроено, как работает, как реализовано, объясни, расскажи, что такое, исследуй, покажи архитектуру, explore
-- **Description:** Понять как что-то устроено, не планируя делать изменения
+- **Keywords:** координатор, пульс проекта, что недоделано, куда движется проект
+- **Description:** Read-only координация проекта и контроль генеральной линии
 
-## Workflow
-1. **Research** — consilium investigates topic in parallel
-2. **Done** — structured answer in chat
 
-No Plan, no Executing, no code changes.
+## Когда использовать
 
-### Consilium roles
-| Role          | Responsibility                   |
-|---------------|----------------------------------|
-| ` + "`architect`" + `   | Architecture, modules, deps      |
-| ` + "`frontend`" + `    | UI/UX, frontend patterns         |
-| ` + "`ui`" + `          | Visual design, UX                |
-| ` + "`security`" + `    | OWASP, vulnerabilities           |
-| ` + "`devops`" + `      | Infra, CI/CD, deployment         |
-| ` + "`api`" + `         | API contracts                    |
-`
+Когда пользователь говорит: "координатор", "следи за проектом", "что недоделано", "что ещё нужно сделать", "генеральная линия проекта", "запусти координатора", "пульс проекта", "куда движется проект" — намерение поставить над проектом смотрителя, который собирает недоделки, следит за генеральной линией и предлагает следующие шаги.
 
-const refactoring = `# Profile: Refactoring
+## Суть
 
-## Meta
-- **Keywords:** рефакторинг, refactor, почисти код, аудит кода, code review, clean up
-- **Description:** Улучшить качество существующего кода без смены функционала
+Координатор — **read-only смотритель одного проекта**. Он НЕ пишет код, НЕ пушит, НЕ заводит таски. Он:
 
-## Workflow (STRICT)
+1. Держит в памяти **генеральную линию** проекта (цели, принципы, что НЕ делаем).
+2. Периодически (**пульс**, дефолт 10 мин) сканирует состояние проекта.
+3. Собирает недоделки, дрейф от линии, риски, зависшее.
+4. Выдаёт дайджест и **предлагает юзеру меню действий** — юзер выбирает.
+5. Если реально ничего не поменялось — **тихий пульс**, не спамит.
 
-### Stages
-1. **Audit** — consilium finds all violations
-2. **Plan** — structured fix list, user approves
-3. **Executing** — refactor by approved plan
-4. **Validation** — regression consilium + tester
-5. **Report**
-6. **Done**
+Решения всегда принимает юзер. Координатор — советник и штурман, не исполнитель.
 
-### Audit consilium
-| Role           | What to find                             |
-|----------------|------------------------------------------|
-| ` + "`architect`" + `    | SOLID violations, god classes, cycles    |
-| ` + "`diagnostics`" + `  | Duplication, dead code, code smells      |
-| ` + "`security`" + `     | OWASP, injection, secret leaks           |
-| ` + "`frontend`" + `     | Component duplication, state issues      |
-| ` + "`api`" + `          | REST inconsistencies, missing validation |
-| ` + "`test`" + `         | Missing tests, weak coverage             |
+## Инварианты (нельзя нарушать)
 
-### Validation — regression consilium
-| Role           | What to check                    |
-|----------------|----------------------------------|
-| ` + "`diagnostics`" + `  | New bugs, regressions, NPE       |
-| ` + "`architect`" + `    | Architectural degradation        |
-| ` + "`security`" + `     | New vulnerabilities               |
+- **Read-only.** Никаких Edit/Write в код проекта, никаких git-мутаций, никаких ` + "`" + `gh issue create` + "`" + `, никакого пуша. Пишет ТОЛЬКО в свою память (` + "`" + `coordinator/<slug>/` + "`" + `).
+- **Решает юзер.** Любое действие сверх чтения — через ` + "`" + `AskUserQuestion` + "`" + `, юзер выбирает.
+- **Один проект = один инстанс.** Slug проекта изолирует память.
+- **Право возразить.** Если видит дрейф в костыль/техдолг/дыру — обязан сказать прямо, а не молча внести в backlog.
+- **Тихий пульс.** Нет изменений с прошлого раза → короткий статус, без меню, без генерации задач ради задач.
+- **Устойчивость к компактизации.** ` + "`" + `pulse-log.md` + "`" + ` = персистентное состояние. Перечитывать память в начале КАЖДОГО пульса.
+
+## Память
+
+Namespace по проекту, вне репо:
+
+` + "`" + `` + "`" + `` + "`" + `
+~/.claude/projects/-Users-neuradev/memory/coordinator/<project-slug>/
+  vision.md      # генеральная линия: цели, принципы, что НЕ делаем, критерии готовности
+  backlog.md     # недоделки, tech debt, пробелы — собирается автоматом каждый пульс
+  pulse-log.md   # журнал пульсов: дата · сигналы · решение юзера
+  decisions.md   # принятые юзером решения (ADR-lite): дата · контекст · выбор · почему
+` + "`" + `` + "`" + `` + "`" + `
+
+**Slug проекта** = имя корневой папки git-репо (или cwd, если не репо). Пример: ` + "`" + `rustdesk-aurora` + "`" + `.
+Определить: ` + "`" + `basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"` + "`" + `.
+
+Если ` + "`" + `vision.md` + "`" + ` в проекте важен команде — предложить юзеру продублировать его в репо (` + "`" + `.coordinator/vision.md` + "`" + `). По умолчанию память внешняя.
+
+## Bootstrap (первый запуск для проекта)
+
+Если ` + "`" + `vision.md` + "`" + ` для slug не существует:
+
+1. Подтянуть контекст: ` + "`" + `CLAUDE.md` + "`" + `, ` + "`" + `README*` + "`" + `, ` + "`" + `package.json` + "`" + `/` + "`" + `build.gradle` + "`" + `/` + "`" + `Cargo.toml` + "`" + `, недавние коммиты, структуру папок.
+2. Сформулировать черновик генеральной линии из этого контекста.
+3. Задать юзеру 3-4 вопроса через ` + "`" + `AskUserQuestion` + "`" + ` для уточнения:
+   - Главная цель проекта на ближайший горизонт?
+   - Что в проекте НЕ делаем принципиально (антискоуп)?
+   - Критерий «готово» / что значит успех?
+   - Главные текущие риски/боли?
+4. Сохранить ` + "`" + `vision.md` + "`" + `. Инициализировать пустые ` + "`" + `backlog.md` + "`" + `, ` + "`" + `pulse-log.md` + "`" + `, ` + "`" + `decisions.md` + "`" + `.
+
+Формат ` + "`" + `vision.md` + "`" + `:
+
+` + "`" + `` + "`" + `` + "`" + `markdown
+# Vision: <project>
+Обновлено: <YYYY-MM-DD>
+
+## Генеральная линия
+<1-3 абзаца: куда движемся и зачем>
+
+## Цели (горизонт)
+- [ ] <цель 1>
+- [ ] <цель 2>
+
+## Принципы
+- <принцип>
+
+## Антискоуп (НЕ делаем)
+- <что осознанно за бортом>
+
+## Критерий готовности
+- <что значит "done" для текущего горизонта>
+` + "`" + `` + "`" + `` + "`" + `
+
+## Алгоритм пульса (read-only)
+
+Каждый вызов ` + "`" + `/coordinator` + "`" + ` = один пульс.
+
+### Шаг 1 — Load memory
+Перечитать ` + "`" + `vision.md` + "`" + `, ` + "`" + `backlog.md` + "`" + `, ` + "`" + `pulse-log.md` + "`" + ` (последние записи), ` + "`" + `decisions.md` + "`" + `.
+Если ` + "`" + `vision.md` + "`" + ` нет → уйти в **Bootstrap**.
+
+### Шаг 2 — Скан сигналов проекта
+Собрать актуальное состояние (только чтение). Источники:
+
+| Сигнал | Как достать |
+|--------|-------------|
+| Что сделано с прошлого пульса | ` + "`" + `git log --since="<last pulse>" --oneline` + "`" + ` |
+| Незакоммиченное / грязное дерево | ` + "`" + `git status --short` + "`" + ` |
+| Активные ветки | ` + "`" + `git branch --sort=-committerdate` + "`" + ` |
+| TODO/FIXME/HACK в коде | ` + "`" + `ast-index search` + "`" + ` / ` + "`" + `grep -rn` + "`" + `  |
+| Открытые PR/issues | ` + "`" + `gh pr list` + "`" + `, ` + "`" + `gh issue list` + "`" + ` (если есть remote) |
+| Незакрытые e2e-сценарии | ` + "`" + `./swarm-report/*-e2e-scenario.md` + "`" + ` с ` + "`" + `[ ]` + "`" + ` шагами |
+| Свежие отчёты | ` + "`" + `./swarm-report/*.md` + "`" + ` новее прошлого пульса |
+| Здоровье билда/тестов (опц., лёгкое) | быстрый ` + "`" + `build` + "`" + `/` + "`" + `test` + "`" + `, если дёшево |
+
+Тяжёлый скан кода — через субагента ` + "`" + `Explore` + "`" + `/` + "`" + `general-purpose` + "`" + `, чтобы не раздувать контекст оркестратора.
+
+### Шаг 3 — Diff vs vision
+Сопоставить текущее состояние с генеральной линией:
+- **Дрейф** — что уехало от целей/принципов (напр. фича вне антискоупа, костыль против принципа).
+- **Прогресс** — какие цели ` + "`" + `vision.md` + "`" + ` продвинулись.
+- **Пробелы** — что заявлено в линии, но нет в работе.
+
+### Шаг 4 — Синтез дайджеста
+Собрать краткий дайджест:
+
+` + "`" + `` + "`" + `` + "`" + `
+🫀 Пульс проекта <slug> · <YYYY-MM-DD HH:MM>
+
+✅ Сделано с прошлого пульса: <...>
+⏳ Зависло: <ветки/PR/сценарии без движения N дней>
+🕳️ Новые пробелы/недоделки: <...>
+🧭 Дрейф от линии: <... или "нет">
+⚠️ Риски: <...>
+` + "`" + `` + "`" + `` + "`" + `
+
+### Шаг 5 — Всегда предлагать (координатор не молчит)
+Координатор **НИКОГДА не уходит в тишину с пустыми руками**. Каждый пульс заканчивается меню из **2-4 конкретных кандидатов** через ` + "`" + `AskUserQuestion` + "`" + ` (+ опция «ничего, следующий пульс»). Выбор кандидатов по приоритету:
+
+1. **Дельта есть** (новые сигналы/дрейф/зависшее) → кандидаты из дельты + backlog.
+2. **Дельты нет, backlog не пуст** → кандидаты из backlog, ранжированные по вкладу в цели ` + "`" + `vision.md` + "`" + `.
+3. **Дельты нет и backlog пуст** → сгенерить новые задачи из целей/пробелов ` + "`" + `vision.md` + "`" + `.
+
+Каждый кандидат — конкретный следующий шаг с пользой/риском, привязанный к генеральной линии.
+
+**Анти-спам (единственное послабление):** на авто-тиках крона при нулевой дельте — сначала короткая строка ` + "`" + `🫀 Δ нет` + "`" + `, затем то же меню от backlog (пометить «кандидаты те же, что прошлый тик»). Меню показывать всё равно — молчать нельзя.
+
+Кандидаты должны быть привязаны к генеральной линии: закрыть пробел цели, погасить дрейф, разгрести зависшее, снять риск.
+
+### Шаг 6 — Запись
+- Обновить ` + "`" + `backlog.md` + "`" + ` (актуальный список недоделок, помечать закрытые).
+- Дописать в ` + "`" + `pulse-log.md` + "`" + `: ` + "`" + `<дата> · сигналы · выбор юзера` + "`" + `.
+- Если юзер принял смысловое решение (сменил приоритет, отверг направление) → дописать в ` + "`" + `decisions.md` + "`" + ` с «почему».
+- Обновлять память **инкрементально**, не переписывать историю.
+
+## Роли (консилиум)
+
+Пульс обычно ведёт оркестратор сам (лёгкий скан). Для глубокого разбора привлекать роли через субагентов:
+
+| Роль | Когда звать |
+|------|-------------|
+| architect | подозрение на архитектурный дрейф |
+| product-manager | сомнение в приоритетах / соответствии линии |
+| diagnostics | зависшие баги, непонятные падения |
+| security | пробелы, пахнущие уязвимостью |
+
+Резолвинг агента — по таблице ` + "`" + `## Agents` + "`" + ` проектного ` + "`" + `CLAUDE.md` + "`" + `, иначе default из глобального.
+
+## Цикл пульса
+
+- ` + "`" + `/coordinator-start [interval]` + "`" + ` — запустить пульс каждые N мин (дефолт 10) через ` + "`" + `/loop` + "`" + `.
+- ` + "`" + `/coordinator` + "`" + ` — один пульс вручную.
+- ` + "`" + `/coordinator-stop` + "`" + ` — остановить цикл.
+- ` + "`" + `/coordinator-yolo [interval]` + "`" + ` — **автономный ночной режим** (юзер спит), см. ниже.
+- ` + "`" + `/coordinator-yolo-stop` + "`" + ` — остановить YOLO и выдать отчёт.
+
+Во время обычного цикла ` + "`" + `AskUserQuestion` + "`" + ` ждёт юзера — если он AFK, пульс просто висит на вопросе, не спамит.
+
+## YOLO-режим (автономный, юзер спит)
+
+Когда юзер ушёл и не может отвечать на вопросы, координатор превращается в **исполнителя-автопилота**: сам решает задачи исходя из долгосрочных целей ` + "`" + `vision.md` + "`" + `. Обычный координатор read-only — YOLO единственный, кто пишет код, и ТОЛЬКО в песочнице.
+
+### РЕЛЬСЫ (нарушение = провал режима)
+1. **Только yolo-ветка от main.** Все изменения в ` + "`" + `yolo/<slug>-<timestamp>` + "`" + ` (отведена от ` + "`" + `main` + "`" + `). Никогда: checkout/commit в main, merge, push (даже yolo-ветки), force, prod-deploy, деструктивный git.
+2. **Валидация перед каждым коммитом** (build + test). Сломал → откатить задачу до последнего зелёного, залогировать, идти дальше. Красное дерево не оставлять.
+3. **Никаких вопросов.** ` + "`" + `AskUserQuestion` + "`" + ` запрещён — решения автономны, каждое записано с «почему» + привязкой к цели.
+4. **Уважать антискоуп** ` + "`" + `vision.md` + "`" + `.
+5. **Атомарные коммиты** — один коммит = одна задача.
+
+### Предусловия старта (иначе не стартовать)
+- Есть ` + "`" + `vision.md` + "`" + ` (иначе сначала ` + "`" + `/coordinator` + "`" + ` bootstrap).
+- Чистое дерево (` + "`" + `git status --short` + "`" + ` пусто).
+- Определяются build + test проекта.
+
+### Старт
+` + "`" + `` + "`" + `` + "`" + `bash
+SLUG=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+TS=$(date +%Y%m%d-%H%M)
+git checkout main && git checkout -b "yolo/$SLUG-$TS"
+` + "`" + `` + "`" + `` + "`" + `
+
+### Цикл (интервальный пульс, 1 задача/тик)
+1. Load memory (` + "`" + `vision` + "`" + `, ` + "`" + `backlog` + "`" + `, ` + "`" + `yolo-log` + "`" + `, ` + "`" + `decisions` + "`" + `).
+2. Выбрать задачу: ранжировать backlog по вкладу в цели vision, взять топ. Backlog пуст → сгенерить кандидатов из целей сам.
+3. Исполнить через exec-субагента по file-scope (нет матча → ` + "`" + `general-purpose` + "`" + `).
+4. Валидация build+test: зелено → коммит ` + "`" + `yolo: <что> (<цель>)` + "`" + ` + лог ✅; красно → откат + лог ❌, дальше.
+5. **Всегда есть что делать.** Backlog исчерпан → сгенерить новую задачу из целей/пробелов ` + "`" + `vision.md` + "`" + ` и делать. YOLO не простаивает — только стоп по команде юзера гасит цикл.
+
+Журнал — ` + "`" + `coordinator/<slug>/yolo-log.md` + "`" + ` (задача · почему · файлы · валидация · коммит · итог).
+
+### Стоп → отчёт (` + "`" + `/coordinator-yolo-stop` + "`" + `)
+Погасить цикл. Собрать ` + "`" + `./swarm-report/yolo-<slug>-<YYYY-MM-DD>.md` + "`" + `: ветка, окно, сделано (коммиты), откаты, ` + "`" + `git diff --stat main...<branch>` + "`" + `, рекомендации на утро (что ревьюить/мержить/выкинуть). Ветку НЕ мержить/пушить/удалять — юзер решает утром.
+
+## Диспетчер профилей + статистика (точка входа)
+
+Координатор — единая точка входа в проект. Он владеет роутингом профилей (см. глобальный ` + "`" + `CLAUDE.md` + "`" + `, раздел «Координатор — точка входа») и ведёт статистику использования **по-проектно**.
+
+### Файлы (в памяти проекта)
+` + "`" + `` + "`" + `` + "`" + `
+coordinator/<slug>/
+  profile-usage.jsonl   # append-лог активаций: {date, profile, request, matched}
+  profile-stats.md      # роллап (координатор регенерит): счётчики, топ, пробелы, предложения
+` + "`" + `` + "`" + `` + "`" + `
+
+### Логирование (на каждый запрос)
+Дописать строку в ` + "`" + `profile-usage.jsonl` + "`" + `:
+` + "`" + `` + "`" + `` + "`" + `json
+{"date":"YYYY-MM-DD","profile":"<название|(none)>","request":"<кратко>","matched":true}
+` + "`" + `` + "`" + `` + "`" + `
+` + "`" + `matched:false` + "`" + ` + ` + "`" + `profile:"(none)"` + "`" + ` — если запрос не покрыт ни одним профилем.
+
+### Бэкфилл истории (разовый, при первой сборке статы)
+Просканить ` + "`" + `./swarm-report/*.md` + "`" + `. Каждый отчёт = один прогон профиля. Смапить по имени файла на профиль эвристикой:
+- ` + "`" + `refactoring-*` + "`" + ` → Рефакторинг · ` + "`" + `hazard-hunt*` + "`" + `/` + "`" + `*audit*` + "`" + ` → Поиск бага · ` + "`" + `research-*` + "`" + `/` + "`" + `*-research-*` + "`" + ` → Исследование
+- ` + "`" + `*e2e*` + "`" + `/` + "`" + `*smoke*` + "`" + ` → E2E тестирование · ` + "`" + `topup*` + "`" + `/` + "`" + `*grant*` + "`" + `/` + "`" + `*feature*` + "`" + ` → Бизнес-фича · и т.п.
+Засеять ` + "`" + `profile-usage.jsonl` + "`" + ` записями (` + "`" + `"backfill":true` + "`" + `, дата из имени файла). Бэкфилл делать один раз (отметить в stats).
+
+### Роллап ` + "`" + `/coordinator-stats` + "`" + `
+1. Пересобрать ` + "`" + `profile-stats.md` + "`" + ` из ` + "`" + `profile-usage.jsonl` + "`" + ` (+ бэкфилл если ещё не делали).
+2. Показать: топ профилей по частоте, редкие/мёртвые, непокрытые паттерны (` + "`" + `matched:false` + "`" + `).
+3. **Предложение новых профилей:** непокрытый паттерн повторился ≥3× → предложить новый профиль через ` + "`" + `AskUserQuestion` + "`" + `. По «ок» — сгенерить черновик ` + "`" + `~/.claude/profiles/<name>.md` + "`" + ` + добавить строку роутинга в ` + "`" + `CLAUDE.md` + "`" + ` (автодетект + таблица). Без «ок» — только зафиксировать в stats. (В YOLO-режиме не спрашивать — писать предложение в stats, не создавать файл.)
+
+### Инвариант диспетчера
+Логирование лёгкое, не мешает работе профиля. Создание/правка профилей и CLAUDE.md — только после явного «ок» юзера (кроме YOLO, где вообще не создаём).
+
+## Report
+
+По запросу «сводка/отчёт координатора» — собрать из ` + "`" + `pulse-log.md` + "`" + ` + ` + "`" + `backlog.md` + "`" + ` дайджест за период и сохранить в ` + "`" + `./swarm-report/coordinator-<slug>-<YYYY-MM-DD>.md` + "`" + `.
 `
 
 const e2eTesting = `# Profile: E2E Testing
 
 ## Meta
-- **Keywords:** e2e, тестирование, прогнать тесты, smoke, прогнать сценарии, проверить платформы, запустить e2e, протестируй
-- **Description:** Прогон smoke/e2e сценариев, автофикс найденных проблем
+- **Keywords:** e2e, smoke, прогнать тесты, проверить платформы
+- **Description:** Прогон smoke/e2e сценариев и исправление найденных проблем
+
 
 ## Workflow (STRICT)
 
 ### Stages
 1. **Prepare** — find scenarios in .specs/e2e/
-2. **Deploy** — deploy to prod
-3. **Run** — run scenarios on selected platforms
-4. **Fix** — auto-fix found issues (exec agents by file scope)
-5. **Re-run** — re-run failed scenarios (max 3 cycles)
-6. **Report**
-7. **Done**
+2. **Run** — run scenarios locally or in an explicitly authorized environment
+3. **Fix** — auto-fix found issues (exec agents by file scope)
+4. **Re-run** — re-run failed scenarios (max 3 cycles)
+5. **Report**
+6. **Done**
+
+Never deploy to production unless the user explicitly requests it and project policy allows it.
 
 ### Platform tools (fixed)
 | Platform | Tool                        |
@@ -207,21 +713,784 @@ const e2eTesting = `# Profile: E2E Testing
 Fix agents resolve through project CLAUDE.md exec table.
 `
 
-const e2eAuthoring = `# Profile: E2E Scenario Authoring
+const redesign = `# Профиль: Редизайн
 
 ## Meta
-- **Keywords:** добавить e2e тест, завести smoke, новый сценарий, создать тест-кейс, написать e2e
-- **Description:** Исследование кода и создание нового сценария для прогонов
+- **Keywords:** редизайн, redesign, переделать UI, обновить дизайн
+- **Description:** Визуальные и UX-изменения без смены бизнес-логики
+
+
+## Когда использовать
+
+По запросу: "редизайн", "redesign", "переделать UI", "обновить дизайн", "поменять стиль", "визуальные изменения", "обновить компонент визуально", "перерисовать". **Цель — изменить визуал/UX существующего функционала без изменения бизнес-логики.**
+
+## Ключевое отличие от других профилей
+
+- **vs Бизнес-фича:** не добавляет новый функционал, меняет только представление
+- **vs Рефакторинг:** изменения видны пользователю (UI), не внутренняя структура кода
+- **Дизайн-система ОБЯЗАТЕЛЬНА** — без ` + "`" + `DESIGN_SYSTEM:` + "`" + ` в проектном CLAUDE.md редизайн не стартует
+
+## Workflow
+
+### Стадии
+1. **Design Audit** — ui + frontend консилиум анализируют текущее состояние
+2. **Design Brief** — формирование визуального плана с привязкой к дизайн-системе
+3. **Executing** — реализация изменений
+4. **Visual Review** — визуальная проверка на всех платформах
+5. **Report** — отчёт
+6. **Done**
+
+### Разрешённые переходы
+
+` + "`" + `` + "`" + `` + "`" + `
+Design Audit  -> Design Brief
+Design Brief  -> Executing       (только после явного одобрения пользователя)
+Executing     -> Visual Review
+Executing     -> Design Audit    (нашли что ещё нужно менять)
+Visual Review -> Report          (всё ок)
+Visual Review -> Executing       (визуальные несоответствия — точечные правки)
+Report        -> Done
+` + "`" + `` + "`" + `` + "`" + `
+
+Все остальные переходы ЗАПРЕЩЕНЫ. Перед сменой стадии — явно указывать текущую и следующую стадию.
+
+### Субагенты по стадиям
+
+| Стадия        | Агенты                          | model  | Что делает                                |
+|--------------|----------------------------------|--------|-------------------------------------------|
+| Design Audit | ДИЗАЙН-КОНСИЛИУМ (см. ниже)     | opus   | Параллельный анализ текущего UI           |
+| Design Brief | Plan                             | opus   | Формирует визуальный план изменений       |
+| Executing    | exec-агенты по scope файлов      | opus   | Реализует визуальные изменения            |
+| Visual Review| Bash + playwright-cli + mobile   | sonnet | Скриншот-проверка на платформах           |
+| Report       | general-purpose                  | haiku  | Формирует отчёт                           |
+| Done         | —                                | —      | Оркестратор фиксирует завершение          |
+
+---
+
+### Design Audit — Дизайн-консилиум
+
+Все агенты запускаются **параллельно** через Task tool. Состав — урезанный консилиум, только визуально-релевантные роли:
+
+| Роль         | Зона ответственности                                              |
+|-------------|-------------------------------------------------------------------|
+| ` + "`" + `ui` + "`" + `        | **Ведущая роль.** Читает дизайн-систему (` + "`" + `~/.claude/design-systems/<name>.md` + "`" + `), анализирует текущий UI, формирует список расхождений с дизайн-системой |
+| ` + "`" + `frontend` + "`" + `  | Компонентная структура, переиспользуемость, стейт UI, паттерны    |
+| ` + "`" + `architect` + "`" + ` | Зависимости между UI-компонентами, shared code между платформами  |
+
+**НЕ участвуют:** ` + "`" + `security` + "`" + `, ` + "`" + `devops` + "`" + `, ` + "`" + `api` + "`" + ` — нерелевантны для визуальных изменений.
+
+**Порядок работы Design Audit:**
+1. Прочитать ` + "`" + `## Agents` + "`" + ` из проектного ` + "`" + `CLAUDE.md` + "`" + `, зарезолвить роли
+2. Прочитать ` + "`" + `DESIGN_SYSTEM:` + "`" + ` из проектного ` + "`" + `CLAUDE.md` + "`" + `
+   - **Если НЕ найдена** — СТОП. Сообщить пользователю: "Дизайн-система не указана. Добавь ` + "`" + `DESIGN_SYSTEM: <name>` + "`" + ` в CLAUDE.md проекта." → предложить варианты → **Done** (не продолжать без дизайн-системы)
+   - **Если найдена** — прочитать ` + "`" + `~/.claude/design-systems/<name>.md` + "`" + `
+3. Запустить всех агентов **параллельно** с описанием задачи + содержимым дизайн-системы
+4. Каждый агент ОБЯЗАН в своём анализе ссылаться на конкретные токены/правила дизайн-системы
+5. Собрать результаты, сформировать сводку
+6. Использовать ` + "`" + `AskUserQuestion` + "`" + ` для уточнения (какие компоненты, какие платформы)
+
+---
+
+### Design Brief — визуальный план
+
+После Design Audit оркестратор формирует план и **обязательно показывает пользователю** через ` + "`" + `AskUserQuestion` + "`" + `: "Вот Design Brief. Одобряешь? Или скорректировать?"
+
+**Формат Design Brief:**
+
+` + "`" + `` + "`" + `` + "`" + `markdown
+## Design Brief: <что редизайним>
+
+### Дизайн-система: <name>
+Ключевые принципы из дизайн-системы, применимые к этой задаче.
+
+### Компоненты к изменению
+- [ ] ` + "`" + `ComponentName` + "`" + ` — <что изменить> — <обоснование из дизайн-системы>
+- [ ] ` + "`" + `ComponentName` + "`" + ` — <что изменить> — <обоснование>
+
+### Токены и стили
+- Цвета: <конкретные изменения со ссылками на токены>
+- Типографика: <шрифты, размеры, веса>
+- Spacing: <отступы, размеры>
+- Радиусы / тени / borders: <если применимо>
+
+### Платформенные различия
+- Web (Vue): <специфика>
+- Mobile (Compose): <специфика>
+- iOS (Swift): <специфика, если применимо>
+
+### Что НЕ меняется
+Явный список компонентов/поведений, которые остаются без изменений.
+` + "`" + `` + "`" + `` + "`" + `
+
+Каждый пункт — **конкретное атомарное изменение** с привязкой к дизайн-системе. Выполняется **только одобренный пользователем список**.
+
+---
+
+### Executing — реализация
+
+Субагент определяется по затронутым файлам через exec-таблицу проекта (` + "`" + `## Agents → Executing` + "`" + `). Порядок резолвинга — как в профиле Бизнес-фича.
+
+**Принципы:**
+- Редизайн НЕ меняет бизнес-логику — только визуальный слой
+- Каждый компонент применяется изолированно
+- Если компонент shared между платформами — exec-агенты запускаются параллельно для каждого scope
+- Все визуальные значения берутся из дизайн-системы (токены, не хардкоды)
+
+---
+
+### Visual Review — визуальная проверка
+
+**Цель:** убедиться что визуальный результат соответствует Design Brief.
+
+**Шаг 1:** Спросить пользователя через ` + "`" + `AskUserQuestion` + "`" + `:
+- "На каких платформах проверяем?" (multiSelect: true)
+- Варианты: Web, Android, iOS, Desktop
+
+**Шаг 2:** Проверка локально или в явно разрешённом окружении. Production deploy — только по явному запросу пользователя и если project policy разрешает.
+
+**Шаг 3:** Визуальная проверка по платформам:
+
+| Платформа | Инструмент                                              |
+|-----------|---------------------------------------------------------|
+| Web       | ` + "`" + `playwright-cli` + "`" + ` via ` + "`" + `Bash` + "`" + ` (goto, snapshot, screenshot)|
+| Android   | Skill ` + "`" + `/test-android` + "`" + ` via ` + "`" + `Bash` + "`" + `                        |
+| iOS       | Skill ` + "`" + `/test-ios` + "`" + ` via ` + "`" + `Bash` + "`" + `                            |
+| Desktop   | Skill ` + "`" + `/test-desktop` + "`" + ` via ` + "`" + `Bash` + "`" + `                        |
+
+**Порядок для каждой платформы:**
+1. Открыть целевой экран/компонент
+2. Сделать скриншот
+3. Сравнить с Design Brief: все ли пункты визуально соответствуют
+4. Зафиксировать результат:
+   - Соответствует → ` + "`" + `[x]` + "`" + ` в Design Brief
+   - Не соответствует → ` + "`" + `[!]` + "`" + ` с описанием расхождения
+
+**Критерий успеха:** все пункты Design Brief помечены ` + "`" + `[x]` + "`" + ` на всех платформах.
+
+Если есть ` + "`" + `[!]` + "`" + ` — откат к Executing для точечных правок (макс 3 цикла).
+
+---
+
+### Report — содержимое отчёта редизайна
+
+Отчёт сохраняется в ` + "`" + `./swarm-report/<slug>-redesign-<YYYY-MM-DD>.md` + "`" + `
+
+Содержимое:
+- Область редизайна и дата
+- Дизайн-система (какая использовалась)
+- Сводка Design Audit (расхождения с дизайн-системой)
+- Design Brief (одобренный план)
+- Что реализовано (компоненты, файлы, конкретные изменения)
+- Результаты Visual Review: скриншоты до/после (если доступны), платформы
+- Проблемы и откаты (если были)
+- Статус: Done / Частично / Прервано
+`
+
+const refactoring = `# Profile: Refactoring
+
+## Meta
+- **Keywords:** рефакторинг, refactor, почисти код, аудит кода
+- **Description:** Улучшение структуры и качества кода без смены функционала
+
+
+Автономный рефакторинг с автодетектом стека, линт-гейтом, structured audit и severity triage.
 
 ## Workflow (STRICT)
 
 ### Stages
-1. **Research** — explore codebase (Explore agent)
-2. **Propose** — suggest scenarios to user
-3. **Approve** — user refines steps
-4. **Save** — write .specs/e2e/ file
-5. **Done**
+0. **Stack Detection** — автодетект технологий проекта
+1. **Lint Gate** — прогон линтера, сбор нарушений
+2. **Audit** — параллельный консилиум с universal + stack-specific чеклистами
+3. **Triage** — группировка находок по severity, structured plan
+4. **Plan** — пользователь одобряет / фильтрует план
+5. **Executing** — рефакторинг по плану
+6. **Validation** — regression consilium + lint re-run + E2E
+7. **Report** — отчёт с метриками
+8. **Done**
 
-No code changes, no deployment, no test execution.
-Scenarios stored in .specs/e2e/ (committed to git).
+---
+
+## Stage 0: Stack Detection
+
+Оркестратор определяет стек БЕЗ вопросов пользователю.
+
+**Алгоритм:**
+1. Прочитать проектный ` + "`" + `CLAUDE.md` + "`" + ` → секция ` + "`" + `## Agents / ### Executing` + "`" + ` → scope даёт стек
+2. Сканировать корень проекта файловой структурой:
+   - ` + "`" + `build.gradle.kts` + "`" + ` с ` + "`" + `org.springframework.boot` + "`" + ` → ` + "`" + `spring-boot` + "`" + `
+   - ` + "`" + `build.gradle.kts` + "`" + ` с ` + "`" + `kotlin("multiplatform")` + "`" + ` или ` + "`" + `composeApp/` + "`" + ` → ` + "`" + `kotlin-multiplatform` + "`" + `
+   - ` + "`" + `package.json` + "`" + ` с ` + "`" + `vue` + "`" + ` → ` + "`" + `vue3` + "`" + `
+   - ` + "`" + `package.json` + "`" + ` с ` + "`" + `react` + "`" + ` → ` + "`" + `react` + "`" + `
+   - ` + "`" + `Package.swift` + "`" + ` или ` + "`" + `iosApp/` + "`" + ` → ` + "`" + `swift` + "`" + `
+   - ` + "`" + `pom.xml` + "`" + ` → ` + "`" + `java-maven` + "`" + `
+   - ` + "`" + `Podfile` + "`" + ` → ` + "`" + `cocoapods` + "`" + `
+3. Сформировать ` + "`" + `tech_stack` + "`" + ` список, например: ` + "`" + `[spring-boot, kotlin-multiplatform, vue3]` + "`" + `
+4. По стеку определить какие роли консилиума активны и какие чеклисты подключать
+
+**Результат Stage 0:** ` + "`" + `tech_stack` + "`" + ` список + активные роли + scope файлов.
+
+---
+
+## Stage 1: Lint Gate
+
+Прогон статического анализа ПЕРЕД аудитом.
+
+**Алгоритм:**
+1. Проверить наличие ` + "`" + `.lint/full-lint.sh` + "`" + ` → запустить
+2. Fallback по стеку:
+   - ` + "`" + `spring-boot` + "`" + ` / ` + "`" + `kotlin-multiplatform` + "`" + ` → ` + "`" + `./gradlew detekt` + "`" + ` + ` + "`" + `ktlint --reporter=plain` + "`" + `
+   - ` + "`" + `vue3` + "`" + ` / ` + "`" + `react` + "`" + ` → ` + "`" + `npx biome check src/` + "`" + ` или ` + "`" + `npx eslint src/` + "`" + `
+   - ` + "`" + `swift` + "`" + ` → ` + "`" + `swiftlint lint` + "`" + `
+3. Собрать вывод в structured формат: ` + "`" + `[file:line] rule — message` + "`" + `
+4. Передать результат в Stage 2 как входные данные
+
+**Субагент:** ` + "`" + `Bash` + "`" + ` (запуск линтеров).
+
+**Результат Stage 1:** список lint violations с файлами и строками.
+
+---
+
+## Stage 2: Audit
+
+6 ролей параллельно. Каждая получает:
+1. Universal чеклист (ниже)
+2. Stack-specific чеклист (ниже)
+3. Lint violations из Stage 1 (агенты НЕ ищут то что линтер уже нашёл)
+4. Scope = весь проект (или указанный пользователем scope)
+
+### Universal чеклист
+
+| Role | Checklist |
+|------|-----------|
+| ` + "`" + `architect` + "`" + ` | SOLID violations, god classes (>500 LOC), cyclic dependencies, layer leaks (controller→repo, useCase→useCase), unused abstractions, incorrect DI scope |
+| ` + "`" + `diagnostics` + "`" + ` | Dead code, duplicate logic (>20 LOC copy-paste), unreachable branches, unused imports/vars, long methods (>100 LOC), deep nesting (>4 levels), magic numbers |
+| ` + "`" + `security` + "`" + ` | Hardcoded secrets/passwords/tokens, SQL injection, XSS, insecure deserialization, missing auth checks, exposed internal errors in API responses, insecure crypto |
+| ` + "`" + `frontend` + "`" + ` | Component duplication, prop drilling >3 levels, missing error/loading states, inconsistent state management, business logic in UI layer |
+| ` + "`" + `api` + "`" + ` | Missing input validation, inconsistent naming (camelCase vs snake_case), missing error responses (4xx/5xx), undocumented endpoints, N+1 queries in resolvers |
+| ` + "`" + `test` + "`" + ` | Missing tests for public API, no edge case coverage, flaky tests (time-dependent, order-dependent), test-prod coupling (shared mutable state), no negative tests |
+
+### Stack-specific чеклисты
+
+| Stack | Role | Additional checks |
+|-------|------|-------------------|
+| ` + "`" + `spring-boot` + "`" + ` | ` + "`" + `architect` + "`" + ` | Controller→Service→Repo layering, @Transactional on service (not repo/controller), field injection (@Autowired on field), JPA entity leaks to API response, missing @Validated, repository method naming |
+| ` + "`" + `spring-boot` + "`" + ` | ` + "`" + `api` + "`" + ` | ResponseEntity used in service layer, missing @ControllerAdvice, raw entity in response (no DTO), missing pagination on list endpoints, missing @RequestBody validation |
+| ` + "`" + `spring-boot` + "`" + ` | ` + "`" + `security` + "`" + ` | Missing @PreAuthorize, CORS misconfiguration, exposed actuator endpoints, hardcoded DB credentials, SQL via string concatenation |
+| ` + "`" + `kotlin-multiplatform` + "`" + ` | ` + "`" + `architect` + "`" + ` | UseCase returns Result<T>, Repo uses only DataSource (no other repos), no cross-layer deps, DI scope (provider for repo/useCase/dataSource, singleton only for DB/Settings), expect/actual only when required |
+| ` + "`" + `kotlin-multiplatform` + "`" + ` | ` + "`" + `frontend` + "`" + ` | Screen/View split (Screen = logic, View = UI), Composable contains business logic, ` + "`" + `remember` + "`" + ` used for logic instead of ViewModel, no public @Preview functions |
+| ` + "`" + `kotlin-multiplatform` + "`" + ` | ` + "`" + `diagnostics` + "`" + ` | ` + "`" + `while(true)` + "`" + ` loops, ` + "`" + `delay()` + "`" + ` in production code, mutable state not wrapped in StateFlow |
+| ` + "`" + `vue3` + "`" + ` | ` + "`" + `frontend` + "`" + ` | Composition API misuse (Options API in <script setup>), reactive() for primitives (should be ref()), missing computed (derived state in watch), watchers where computed suffices, v-if + v-for on same element |
+| ` + "`" + `vue3` + "`" + ` | ` + "`" + `architect` + "`" + ` | Store logic in components, missing composable extraction (>50 LOC setup), global state mutation outside store |
+| ` + "`" + `swift` + "`" + ` | ` + "`" + `architect` + "`" + ` | Actor isolation violations, missing Sendable conformance, retain cycles (strong self in closures), force unwraps in production |
+| ` + "`" + `swift` + "`" + ` | ` + "`" + `diagnostics` + "`" + ` | Unused @objc, force casts, implicitly unwrapped optionals outside IBOutlet |
+
+### Prompt для каждого агента
+
+` + "`" + `` + "`" + `` + "`" + `
+Рефакторинг-аудит проекта.
+
+Запрос пользователя: <user_request>
+Определённый стек: <tech_stack>
+Lint violations (уже найдены, НЕ дублируй): <lint_results>
+
+Проверь по чеклисту:
+<universal_checklist для роли>
+<stack_specific_checklist для роли>
+
+Формат ответа — СТРОГО:
+Для КАЖДОЙ находки:
+- file: <path>
+- line: <number or range>
+- issue: <краткое описание>
+- severity: critical | high | medium | low
+- fix: <как исправить, 1-2 предложения>
+- effort: trivial | small | medium | large
+
+Если нарушений нет — ответить "No issues found".
+НЕ включать lint violations — они уже учтены.
+` + "`" + `` + "`" + `` + "`" + `
+
+**Субагенты:** роли из проектного CLAUDE.md (секция Consilium). Если роль не найдена → default из глобального CLAUDE.md.
+
+**Результат Stage 2:** structured findings от каждой роли.
+
+---
+
+## Stage 3: Triage
+
+Оркестратор собирает ВСЕ находки (Lint Gate + Audit). Группирует по severity.
+
+### Severity criteria
+
+| Severity | Icon | Criteria | Action |
+|----------|------|----------|--------|
+| Critical | ` + "`" + `RED` + "`" + ` | Security holes, data leaks, crashes, data corruption | Fix обязательно |
+| High | ` + "`" + `ORANGE` + "`" + ` | SOLID violations, god classes, missing error handling, layer leaks | Fix рекомендован |
+| Medium | ` + "`" + `YELLOW` + "`" + ` | Duplication, code smells, missing tests, inconsistencies | Fix полезен |
+| Low | ` + "`" + `WHITE` + "`" + ` | Style, naming, minor inconsistencies covered by lint | Fix опционален |
+
+### Triage output format
+
+` + "`" + `` + "`" + `` + "`" + `markdown
+## Refactoring Plan
+
+Stack: [spring-boot, kotlin-multiplatform, vue3]
+Total findings: <N> (Lint: <X>, Audit: <Y>)
+
+### Critical (<count>)
+1. [security] Hardcoded DB password — ` + "`" + `application.yml:15` + "`" + ` — effort: trivial
+2. [security] SQL injection via string concat — ` + "`" + `UserRepository.kt:42` + "`" + ` — effort: small
+...
+
+### High (<count>)
+1. [architect] God class UserService.kt (850 LOC) — split by domain responsibility — effort: large
+2. [architect] UseCase depends on another UseCase — ` + "`" + `CreateOrderUseCase.kt:12` + "`" + ` — effort: small
+...
+
+### Medium (<count>)
+1. [diagnostics] Duplicate auth check logic — ` + "`" + `AuthController.kt:30` + "`" + ` ≈ ` + "`" + `AdminController.kt:25` + "`" + ` — effort: medium
+...
+
+### Low (<count>)
+1. [diagnostics] Magic number 86400 — ` + "`" + `TokenService.kt:18` + "`" + ` — effort: trivial
+...
+` + "`" + `` + "`" + `` + "`" + `
+
+**Результат Stage 3:** structured plan показывается пользователю.
+
+---
+
+## Stage 4: Plan
+
+Пользователь видит structured plan из Triage. Спросить через ` + "`" + `AskUserQuestion` + "`" + `:
+
+**Вопрос:** "Что фиксим?"
+
+**Опции:**
+1. **Всё** — все severity levels
+2. **Critical + High** — только важное (рекомендуется)
+3. **Только Critical** — минимум, security-only
+4. **Выбрать вручную** — пользователь укажет номера
+
+После выбора — сформировать approved plan (список конкретных файлов и изменений).
+
+---
+
+## Stage 5: Executing
+
+По approved plan запускаются exec-агенты.
+
+**Маршрутизация:** по file scope из проектного CLAUDE.md (секция ` + "`" + `## Agents / ### Executing` + "`" + `).
+- Каждый файл матчится на scope → соответствующий exec-агент
+- Если задача трогает несколько слоёв — несколько exec-агентов параллельно
+- Если scope не найден → default exec-агент по стеку
+
+**Prompt для exec-агента:**
+` + "`" + `` + "`" + `` + "`" + `
+Рефакторинг по утверждённому плану.
+
+Задачи для тебя (файлы в твоём scope):
+<список findings с fix-инструкциями>
+
+Правила:
+- Менять ТОЛЬКО то что в плане — никаких побочных улучшений
+- Сохранять публичный API (если не указано иное)
+- Не ломать существующие тесты
+- Следовать архитектурным правилам проекта (из CLAUDE.md)
+` + "`" + `` + "`" + `` + "`" + `
+
+---
+
+## Stage 6: Validation
+
+### 6.1 Lint re-run
+Повторить lint gate (Stage 1). Сравнить с исходным:
+- Новые violations = откат
+- Количество violations должно уменьшиться или остаться прежним
+
+### 6.2 Regression consilium
+Параллельно 3 роли проверяют что рефакторинг не сломал:
+
+| Role | What to check |
+|------|---------------|
+| ` + "`" + `diagnostics` + "`" + ` | New bugs, regressions, NPE, changed behavior, broken imports |
+| ` + "`" + `architect` + "`" + ` | Architectural degradation, new dependency cycles, layer violations |
+| ` + "`" + `security` + "`" + ` | New vulnerabilities, removed security checks, exposed data |
+
+Каждый отвечает: ` + "`" + `PASS` + "`" + ` / ` + "`" + `FAIL + description` + "`" + `.
+Любой ` + "`" + `FAIL` + "`" + ` → откат к Stage 5 с описанием проблемы.
+
+### 6.3 Unit tests
+Запуск ` + "`" + `./gradlew test` + "`" + ` (или стек-эквивалент). Fail → откат.
+
+### 6.4 E2E (по общим правилам)
+Следовать инструкциям Validation из глобального CLAUDE.md:
+- Определить платформы по затронутым файлам
+- Деплой → E2E сценарий → проверка
+
+---
+
+## Stage 7: Report
+
+Сохранить в ` + "`" + `./swarm-report/refactoring-<YYYY-MM-DD>.md` + "`" + `.
+
+### Report format
+
+` + "`" + `` + "`" + `` + "`" + `markdown
+# Refactoring Report — <date>
+
+## Summary
+- **Stack**: [spring-boot, kotlin-multiplatform, vue3]
+- **Scope**: <что рефакторили — весь проект / модуль / файлы>
+- **Duration**: Stage 0→Done
+
+## Findings
+| Severity | Found | Fixed | Skipped |
+|----------|-------|-------|---------|
+| Critical | X | X | 0 |
+| High | X | X | X |
+| Medium | X | X | X |
+| Low | X | X | X |
+| **Total** | **X** | **X** | **X** |
+
+## Lint Delta
+- Before: <N> violations
+- After: <M> violations
+- Delta: <-K> (reduced)
+
+## Changes
+<список изменённых файлов с кратким описанием что и почему>
+
+## Skipped (with reasons)
+<если пользователь пропустил пункты — перечислить с причинами>
+` + "`" + `` + "`" + `` + "`" + `
+
+---
+
+## Rollback Rules
+
+- Любой FAIL в Validation → откат изменений затронутого exec-агента
+- Повторная попытка с учётом причины FAIL
+- Максимум 2 retry на один finding → пропустить и пометить в Report как "failed to fix"
+- Пользователь информируется о каждом откате
+`
+
+const research = `# Profile: Research
+
+## Meta
+- **Keywords:** как устроено, как работает, исследуй, объясни, explore
+- **Description:** Исследование без планирования изменений
+
+
+## Workflow
+1. **Research** — consilium investigates topic in parallel
+2. **Done** — structured answer in chat
+
+No Plan, no Executing, no code changes.
+
+### Consilium roles
+| Role          | Responsibility                   |
+|---------------|----------------------------------|
+| ` + "`" + `architect` + "`" + `   | Architecture, modules, deps      |
+| ` + "`" + `frontend` + "`" + `    | UI/UX, frontend patterns         |
+| ` + "`" + `ui` + "`" + `          | Visual design, UX                |
+| ` + "`" + `security` + "`" + `    | OWASP, vulnerabilities           |
+| ` + "`" + `devops` + "`" + `      | Infra, CI/CD, deployment         |
+| ` + "`" + `api` + "`" + `         | API contracts                    |
+`
+
+const stratSession = `# Profile: Стратсессия
+
+## Meta
+- **Keywords:** стратсессия, стратегия, годовой план, roadmap, quarterly planning
+- **Description:** Стратегическое планирование от года до задач
+
+
+## Когда использовать
+
+Когда пользователь говорит: "стратсессия", "стратегическая сессия", "спланировать год", "годовой план", "планируем год", "план на год", "стратегия на год", "quarterly planning", "roadmap на год", "декомпозировать год" — намерение спланировать горизонт (год) **сверху вниз** и завести результат в трекер.
+
+Это профиль-фасилитатор: ведёт стратегическую сессию год → кварталы → спринты → задачи, на каждом уровне сверяется с юзером, в конце заводит **Кварталы (milestones) + Спринты (labels) + задачи (issues)** в GitHub.
+
+## Суть
+
+Планирование **сверху вниз**, интерактивно, с чекпойнтом на каждом уровне:
+
+` + "`" + `` + "`" + `` + "`" + `
+Год (тема + столпы)
+  └─ Квартал ×4 (тема + цели + эпики)
+       └─ Спринт (2 нед, S1..S6/квартал)
+            └─ Задача (issue: title, DoD, область, оценка, зависимости)
+` + "`" + `` + "`" + `` + "`" + `
+
+Не прыгать вниз, пока верхний уровень не утверждён юзером. В конце — подтвердить трекер и завести Q + S.
+
+## Инварианты (нельзя нарушать)
+
+- **Сверху вниз с чекпойнтами.** Каждый уровень (год→квартал→спринт→задачи) утверждается юзером через ` + "`" + `AskUserQuestion` + "`" + ` перед спуском ниже. Не декомпозировать в задачи без утверждённых кварталов.
+- **Стоп перед записью.** Никаких мутаций трекера (создание milestone/label/issue/задач) до утверждённого чекпойнта Tasks И выбора платформы юзером. План согласован сверху вниз — запись только после этого.
+- **Код не трогаем.** Стратсессия только планирует и заводит трекер. Ни Edit/Write в код, ни деплоя.
+- **Реализм.** Не пихать в спринт больше, чем влезает; помечать зависимости и порядок; резать оптимистичный объём. Оценка обязательна.
+- **Право возразить.** Нереалистичный объём, дрейф от vision-памяти, эпик без ценности — сказать прямо, а не молча завести.
+- **Продуктовый язык на чекпойнтах (СТРОГО).** Всё, что показывается юзеру на чекпойнте/дискуссии (год, кварталы, спринты), формулируется как **результат/ценность — «что юзер получит на руки и что сможет ДЕЛАТЬ в конце периода»**, а НЕ как технические артефакты. Запрещены в тексте для юзера тех-термины реализации (tool-loop, adapter, JSONL, spawn-контракт, SDK, схема БД, in-process/subprocess и т.п.) — если термин необходим, дать в скобках человеческое пояснение. Технику держать в конспекте ` + "`" + `swarm-report` + "`" + ` (раздел «как строим»), но НЕ выносить в разговор с юзером. Каждый квартал описывать шаблоном: **«В конце квартала ты сможешь: … Демо-момент: … Чего ещё НЕ будет: …»**. Это же правило передавать субагентам консилиума в prompt: их выводы для чекпойнта — продуктовым языком, тех-детали отдельным свёрнутым блоком.
+- **Устойчивость к компактизации.** Дерево плана держать в ` + "`" + `./swarm-report/stratsession-<slug>-<YYYY-MM-DD>.md` + "`" + `, обновлять по мере утверждения уровней — источник правды при перезапуске.
+
+## Трекер (GitHub Issues + Milestones)
+
+Репозиторий: ` + "`" + `gh repo view --json nameWithOwner -q .nameWithOwner` + "`" + `.
+
+**Маппинг Q + S (milestones плоские, поэтому квартал=milestone, спринт=label):**
+
+| Сущность | GitHub | Детали |
+|----------|--------|--------|
+| **Квартал** | Milestone | ` + "`" + `Q1 2026` + "`" + ` (due_on = конец квартала). В описании — тема + таблица спринтов с датами |
+| **Спринт** | Label | ` + "`" + `S1` + "`" + `..` + "`" + `S6` + "`" + ` (цвет ` + "`" + `BFD4F2` + "`" + `). Даты спринта живут в описании milestone-квартала |
+| **Эпик** | Label | ` + "`" + `epic:<slug>` + "`" + ` (цвет ` + "`" + `5319E7` + "`" + `); крупный эпик опц. — tracking-issue со списком задач |
+| **Область** | Label | ` + "`" + `backend` + "`" + `/` + "`" + `desktop` + "`" + `/` + "`" + `mobile` + "`" + `/` + "`" + `ios` + "`" + `/` + "`" + `web` + "`" + `/` + "`" + `satellite` + "`" + `/` + "`" + `infra` + "`" + ` |
+| **Приоритет** | Label | ` + "`" + `P0` + "`" + `/` + "`" + `P1` + "`" + `/` + "`" + `P2` + "`" + `/` + "`" + `P3` + "`" + ` (Critical/High/Normal/Low) |
+| **Задача** | Issue | milestone = квартал, labels = ` + "`" + `[Sxx, epic:…, <область>, Px]` + "`" + `. Тело: контекст · DoD · зависимости · оценка |
+
+## Workflow (STRICT)
+
+### Stages
+0. **Context** — контекст горизонта (read-only)
+1. **Year** — годовая тема + стратегические столпы → чекпойнт
+2. **Quarters** — консилиум delivery; поквартальная дискуссия, гейт на каждый квартал
+3. **Sprints** — консилиум (BA + doc-eng); дискуссия, запись спринтов только после одобрения
+4. **Tasks** — консилиум (doc-eng + BA), без дискуссии, декомпозиция → разовый чекпойнт
+5. **Create** — спросить платформу → завести Q + S + задачи
+6. **Done** — сводка
+
+### Allowed transitions
+` + "`" + `` + "`" + `` + "`" + `
+Context  -> Year
+Year     -> Quarters
+Quarters -> Sprints
+Sprints  -> Tasks
+Tasks    -> Create   (после чекпойнта Tasks)
+Create   -> Done
+` + "`" + `` + "`" + `` + "`" + `
+Чекпойнт (` + "`" + `AskUserQuestion` + "`" + ` «утверждаем уровень / правим») обязателен на Year, Quarters, Sprints, Tasks. Отдельной стоп-стадии Target нет — план утверждается на чекпойнте Tasks, затем выбор платформы = зелёный свет на запись.
+
+---
+
+## Stage 0: Context (read-only)
+
+Собрать контекст горизонта без вопросов:
+- Vision-память проекта (` + "`" + `~/.claude/projects/-Users-<user>/memory/…` + "`" + `, ` + "`" + `haptic-product-vision` + "`" + ` и т.п.), ` + "`" + `CLAUDE.md` + "`" + `, ` + "`" + `README*` + "`" + `.
+- Backlog координатора если есть (` + "`" + `coordinator/<slug>/backlog.md` + "`" + `, ` + "`" + `vision.md` + "`" + `).
+- Свежие ` + "`" + `./swarm-report/*.md` + "`" + `, открытые ` + "`" + `gh issue list` + "`" + `, недавняя git-история.
+- Определить **старт года**: спросить на Stage 1 (сегодня / начало след. квартала / кастом). По умолчанию — текущая дата.
+
+Тяжёлый скан — через субагента ` + "`" + `Explore` + "`" + `, чтобы не раздувать контекст.
+
+## Stage 1: Year
+
+**Консилиум года** — 5 бизнес-агентов параллельно (Task tool), каждый со своей линзой на горизонт:
+
+| Агент | Линза на год |
+|-------|--------------|
+| ` + "`" + `voltagent-biz:product-manager` + "`" + ` | Продуктовая стратегия, годовая тема, стратегические столпы, PMF |
+| ` + "`" + `voltagent-biz:business-analyst` + "`" + ` | ROI, юнит-экономика, бизнес-ценность направлений, ранжирование |
+| ` + "`" + `voltagent-biz:sales-engineer` + "`" + ` | Go-to-market, техпозиционирование, что нужно для сделок/демо |
+| ` + "`" + `voltagent-biz:customer-success-manager` + "`" + ` | Удержание, адопшн, здоровье клиентов, борьба с оттоком |
+| ` + "`" + `voltagent-biz:legal-advisor` + "`" + ` | Комплаенс, IP, лицензии, юридические риски года |
+
+Каждый агент читает контекст (Stage 0) и отдаёт: приоритеты своей линзы + риски + что заложить в год.
+` + "`" + `product-manager` + "`" + ` **синтезирует** из 5 перспектив: **одну годовую тему** + **3-5 стратегических столпов** (крупные направления), с пометкой вклада каждой линзы и конфликтов между ними.
+
+Чекпойнт: показать синтез (тема + столпы + ключевые риски по линзам), ` + "`" + `AskUserQuestion` + "`" + ` — «утверждаем / правим». Спросить дату старта года, если не ясна.
+
+## Stage 2: Quarters
+
+**Консилиум квартала** — 5 агентов параллельно (Task tool), линза delivery/feasibility:
+
+| Агент | Линза на квартал |
+|-------|------------------|
+| ` + "`" + `voltagent-biz:business-analyst` + "`" + ` | Ценность/ROI, приоритизация, порядок эпиков |
+| ` + "`" + `voltagent-core-dev:api-designer` + "`" + ` | Эволюция API/контрактов, что нужно завезти |
+| ` + "`" + `voltagent-core-dev:backend-developer` + "`" + ` | Бэкенд-выполнимость, объём, тех-риски |
+| ` + "`" + `voltagent-infra:devops-engineer` + "`" + ` | Инфра/CI-CD/релизная ёмкость, что блокирует |
+| ` + "`" + `voltagent-dev-exp:documentation-engineer` + "`" + ` | Docs/DX-поставки, что документировать |
+
+**Режим: поквартальная дискуссия с гейтом (Q1 → Q2 → Q3 → Q4 по очереди).** Для каждого квартала:
+
+1. Консилиум даёт входы (ценность, API, бэкенд, инфра, docs) по столпам года.
+2. Фасилитатор **синтезирует продуктовый план квартала** и излагает его **человеческим языком по продуктовым методологиям** (OKR / Now-Next-Later / RICE / JTBD — что уместно): тема квартала, цели (OKR-стиль), эпики, зависимости, риски.
+3. **Дискуссия с юзером** — обсуждаем, правим. Это диалог, а не разовый чекпойнт.
+4. **Гейт:** пока юзер не утвердил план квартала — **к следующему кварталу не переходим**. Утвердил → фиксируем в конспекте → следующий квартал.
+
+Выход стадии: 4 утверждённых квартала (тема · OKR-цели · эпики · зависимости).
+
+## Stage 3: Sprints
+
+**Консилиум спринтов** — 2 агента (Task tool):
+
+| Агент | Линза на спринт |
+|-------|-----------------|
+| ` + "`" + `voltagent-biz:business-analyst` + "`" + ` | Ёмкость, приоритет, ценность спринт-срезов, порядок |
+| ` + "`" + `voltagent-dev-exp:documentation-engineer` + "`" + ` | Формулировка спринт-целей, что документировать, DX |
+
+Разбить утверждённый квартал на спринты (дефолт **2 недели**, S1..S6; спросить длину, если юзер хочет иначе). Даты спринтов — от старта квартала. Для каждого спринта — что делаем (срезы эпиков) с учётом ёмкости.
+
+**Режим: дискуссия с гейтом** (как в Quarters). Фасилитатор излагает спринт-план, обсуждаем, правим.
+**Запись строго после одобрения:** спринт-план фиксируется в конспект **только** после явного «ок» юзера. Нет одобрения — не фиксируем и дальше не идём.
+
+## Stage 4: Tasks
+
+**Без дискуссии** — консилиум декомпозирует утверждённые спринты в задачи и показывает результат одним чекпойнтом.
+
+| Агент | Вклад |
+|-------|-------|
+| ` + "`" + `voltagent-dev-exp:documentation-engineer` + "`" + ` | Формулировки задач: title глаголом, тело, DoD |
+| ` + "`" + `voltagent-biz:business-analyst` + "`" + ` | Оценка, приоритет ` + "`" + `P0-P3` + "`" + `, зависимости, ёмкость спринта |
+
+Каждая задача: title («Добавить X»), краткое описание, **DoD** (критерии готовности), область, **оценка**, зависимости, приоритет.
+Чекпойнт (разовый, не дискуссия): список задач по спринтам, ` + "`" + `AskUserQuestion` + "`" + ` — «утверждаем / правим объём». Утвердили → Create.
+
+## Stage 5: Create
+
+**Сначала спросить платформу** трекера через ` + "`" + `AskUserQuestion` + "`" + ` (выбор = зелёный свет на запись):
+- **GitHub Issues** — репо из ` + "`" + `gh repo view --json nameWithOwner -q .nameWithOwner` + "`" + `; маппинг Квартал=milestone, Спринт=label (см. раздел «Трекер»).
+- **Яндекс Трекер** — MCP ` + "`" + `yandex-tracker` + "`" + `; нативные сущности (очередь · версии/спринты · эпики · задачи).
+- (при необходимости — другой трекер).
+
+Уточнить объём записи: весь год (все Q) / только текущий квартал / выбранные Q. Затем создавать **инкрементально и идемпотентно**.
+
+### Вариант A — GitHub Issues
+
+` + "`" + `` + "`" + `` + "`" + `bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+
+# 1) Кварталы → milestones (gh не умеет milestone нативно → REST API)
+gh api repos/$REPO/milestones -f title="Q1 2026" \
+  -f due_on="2026-03-31T23:59:59Z" \
+  -f description="Тема: <...>%0AСпринты: S1 (01–14 янв) · S2 (15–28 янв) · …"
+
+# 2) Спринты/эпики/области/приоритеты → labels (идемпотентно)
+gh label create "S1"            --repo $REPO --color BFD4F2 --description "Спринт 1" 2>/dev/null || true
+gh label create "epic:onboarding" --repo $REPO --color 5319E7 2>/dev/null || true
+gh label create "P1"            --repo $REPO --color D93F0B 2>/dev/null || true
+gh label create "backend"       --repo $REPO --color 1D76DB 2>/dev/null || true
+
+# 3) Задачи → issues (привязка к кварталу-milestone + спринт/эпик/область/приоритет)
+gh issue create --repo $REPO --title "<title>" \
+  --milestone "Q1 2026" --label "S1,epic:onboarding,backend,P1" \
+  --body "$(cat <<'EOF'
+## Контекст
+<зачем>
+
+## Что сделать
+<...>
+
+## Критерии готовности (DoD)
+- [ ] <...>
+
+## Зависимости
+<issue/эпик или «нет»>
+
+## Оценка
+<S/M/L или story points> · Спринт S1 (<даты>)
+EOF
+)"
+` + "`" + `` + "`" + `` + "`" + `
+
+Инкрементально: сначала milestones, потом labels, потом issues — issue ссылается на существующий milestone по title.
+
+### Вариант B — Яндекс Трекер (MCP ` + "`" + `yandex-tracker` + "`" + `)
+
+Уточнить у юзера **очередь** (queue). Нативный маппинг (Трекер богаче GitHub — есть спринты и эпики из коробки):
+
+| Сущность | Трекер | Инструмент |
+|----------|--------|-----------|
+| Квартал | Версия очереди (` + "`" + `queue_create_version` + "`" + `) или родительский эпик | ` + "`" + `mcp__yandex-tracker__queue_create_version` + "`" + ` |
+| Спринт | Спринт-сущность / тег ` + "`" + `S1..S6` + "`" + ` | поле спринта в ` + "`" + `issue_create/issue_update` + "`" + ` |
+| Эпик | Эпик | ` + "`" + `mcp__yandex-tracker__issue_create` + "`" + ` (тип «Эпик») |
+| Задача | Задача, привязана к эпику/спринту/версии | ` + "`" + `mcp__yandex-tracker__issue_create` + "`" + ` + ` + "`" + `issue_add_link` + "`" + ` |
+
+Приоритет/область — через поля/теги Трекера. Тело задачи — тот же шаблон (Контекст · Что сделать · DoD · Зависимости · Оценка).
+
+## Stage 6: Done
+
+- Сводка: созданные кварталы (milestones/версии), число задач по спринтам, лейблы/эпики — со ссылками.
+- Обновить конспект ` + "`" + `./swarm-report/stratsession-<slug>-<YYYY-MM-DD>.md` + "`" + `.
+
+## Консилиумы по стадиям (сводка)
+
+Агенты фиксированы за стадиями (запускаются через Task tool):
+
+| Стадия | Агенты | Режим |
+|--------|--------|-------|
+| **Year** | ` + "`" + `voltagent-biz:product-manager` + "`" + ` · ` + "`" + `business-analyst` + "`" + ` · ` + "`" + `sales-engineer` + "`" + ` · ` + "`" + `customer-success-manager` + "`" + ` · ` + "`" + `legal-advisor` + "`" + ` | параллельно → синтез pm → чекпойнт |
+| **Quarters** | ` + "`" + `business-analyst` + "`" + ` · ` + "`" + `voltagent-core-dev:api-designer` + "`" + ` · ` + "`" + `backend-developer` + "`" + ` · ` + "`" + `voltagent-infra:devops-engineer` + "`" + ` · ` + "`" + `voltagent-dev-exp:documentation-engineer` + "`" + ` | дискуссия, гейт на каждый квартал |
+| **Sprints** | ` + "`" + `business-analyst` + "`" + ` · ` + "`" + `documentation-engineer` + "`" + ` | дискуссия, запись после одобрения |
+| **Tasks** | ` + "`" + `documentation-engineer` + "`" + ` · ` + "`" + `business-analyst` + "`" + ` | без дискуссии, разовый чекпойнт |
+| **Create** | — (механика записи в трекер) | после выбора платформы |
+
+Имена агентов — точные (voltagent-плагины). Если агент недоступен в проекте — заменить ближайшим из проектного ` + "`" + `CLAUDE.md` + "`" + ` ` + "`" + `## Agents` + "`" + ` / глобального default, предупредив юзера.
+
+## Report
+
+Конспект сессии — ` + "`" + `./swarm-report/stratsession-<slug>-<YYYY-MM-DD>.md` + "`" + `: годовая тема + столпы, кварталы (тема/цели/эпики), спринт-планы, дерево задач, созданные milestones/labels/issues (номера + ссылки). Обновляется по мере прохождения стадий (устойчивость к компактизации).
+`
+
+const taskCreation = `# Profile: Task Creation
+
+## Meta
+- **Keywords:** создать задачу, завести таску, тикет, issue, завести баг
+- **Description:** Интервью и создание задачи в трекере без реализации
+
+
+## Когда использовать
+
+Когда пользователь говорит: "завести таску", "создать задачу", "хочу завести", "добавить в трекер", "создай тикет", "заведи баг", "хочу создать баг" — **без намерения реализовывать прямо сейчас**.
+
+Это профиль-интервью: собрать данные → создать GitHub Issue. Никакого кода, деплоя или Research-консилиума.
+
+## Tracker
+
+Задачи ведутся в **GitHub Issues**. Репозиторий берётся из git remote текущего проекта:
+` + "`" + `` + "`" + `` + "`" + `bash
+gh repo view --json nameWithOwner -q .nameWithOwner
+` + "`" + `` + "`" + `` + "`" + `
+
+## Workflow
+
+` + "`" + `` + "`" + `` + "`" + `
+Interview -> Create -> Done
+` + "`" + `` + "`" + `` + "`" + `
+
+### Шаг 1: Interview
+
+Задать вопросы через ` + "`" + `AskUserQuestion` + "`" + ` (несколько за раз где возможно):
+
+**Обязательные:**
+- Тип: задача/фича/улучшение или **баг**?
+- Название задачи (кратко, глаголом: "Добавить X", "Исправить Y")
+- Описание: что нужно сделать и зачем?
+
+**Опциональные (спросить если не очевидно из контекста):**
+- Приоритет: Critical / High / Normal / Low
+- Критерии готовности (acceptance criteria)
+- Компонент / область: Backend, Frontend, Mobile, Инфра
+
+Продолжать уточнять через ` + "`" + `AskUserQuestion` + "`" + ` пока картина не полная. Не создавать задачу с неясным описанием.
+
+### Шаг 2: Create
+
+` + "`" + `` + "`" + `` + "`" + `bash
+gh issue create --repo <owner/repo> --title "<title>" --label "<labels>" --body "<body>"
+` + "`" + `` + "`" + `` + "`" + `
+
+- **Баг** → label ` + "`" + `bug` + "`" + `
+- **Задача/фича** → без label ` + "`" + `bug` + "`" + `
+- Добавить labels по области: ` + "`" + `backend` + "`" + `, ` + "`" + `pipeline` + "`" + `, ` + "`" + `pm-chat` + "`" + `, ` + "`" + `mobile` + "`" + `, ` + "`" + `web` + "`" + `, ` + "`" + `ios` + "`" + `
+- Если label не существует — создать через ` + "`" + `gh label create` + "`" + `
+
+### Шаг 3: Done
+
+Показать пользователю:
+- Номер issue (например ` + "`" + `#15` + "`" + `)
+- Ссылку на GitHub Issue
+- Краткое резюме созданного
 `

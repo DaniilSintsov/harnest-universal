@@ -3,7 +3,7 @@ package mapping
 import (
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
+	"github.com/daniilsintsov/harnest-universal/internal/detector"
 )
 
 type AgentConfig struct {
@@ -11,6 +11,9 @@ type AgentConfig struct {
 	Exec      []ExecAgent
 	Models    map[string]string // role → tier (high/medium/low)
 }
+
+// AutoAgent defers role selection to the active harness.
+const AutoAgent = "auto"
 
 // defaultModelTiers defines the default capability tier per consilium role.
 var defaultModelTiers = map[string]string{
@@ -328,8 +331,7 @@ func MatchAgent(discovered []string, keywords []string) string {
 }
 
 // matchWithFallback matches agent from discovered list, with harness-specific fallback.
-// For claude-code: fallback to "general-purpose" (built-in).
-// For other harnesses: no fallback (empty string).
+// Claude Code has a built-in general-purpose agent; other harnesses defer to auto selection.
 func matchWithFallback(discovered []string, keywords []string, harnessName string) string {
 	agent := MatchAgent(discovered, keywords)
 	if agent != "" {
@@ -338,7 +340,7 @@ func matchWithFallback(discovered []string, keywords []string, harnessName strin
 	if harnessName == "claude-code" {
 		return "general-purpose"
 	}
-	return ""
+	return AutoAgent
 }
 
 // matchRole resolves a consilium role agent from discovered agents.
@@ -398,6 +400,11 @@ func Resolve(stacks []detector.Stack, discovered []string, harnessName string) A
 		Role:  "mobile",
 		Agent: matchRole(discovered, mobileKeywords, primaryLang, defaultRoleKeywords["mobile"], harnessName),
 	})
+	for i := range config.Consilium {
+		if config.Consilium[i].Agent == "" {
+			config.Consilium[i].Agent = AutoAgent
+		}
+	}
 
 	// Exec agents from detected stacks
 	for _, s := range stacks {
@@ -424,7 +431,7 @@ type AgentStructure struct {
 }
 
 type ExecScope struct {
-	StackName string // "spring-boot" — display in wizard
+	StackName string // "spring-boot" — key used by Suggestions.Exec
 	Scope     string // "backend/**/*.kt"
 }
 
@@ -473,6 +480,11 @@ func GetSuggestions(stacks []detector.Stack, discovered []string, harnessName st
 	sug.Consilium["diagnostics"] = matchRole(discovered, diagnosticsKeywords, primaryLang, defaultRoleKeywords["diagnostics"], harnessName)
 	sug.Consilium["test"] = matchRole(discovered, testKeywords, primaryLang, defaultRoleKeywords["test"], harnessName)
 	sug.Consilium["mobile"] = matchRole(discovered, mobileKeywords, primaryLang, defaultRoleKeywords["mobile"], harnessName)
+	for role, agent := range sug.Consilium {
+		if agent == "" {
+			sug.Consilium[role] = AutoAgent
+		}
+	}
 
 	// Exec suggestions
 	for _, st := range stacks {

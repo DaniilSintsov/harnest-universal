@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/mapping"
 )
 
 type ProjectConfig struct {
@@ -16,36 +16,60 @@ type ProjectConfig struct {
 	Models    map[string]string // role → tier (high/medium/low)
 }
 
-// ReadProject parses ## Agents section from CLAUDE.md
+// ReadProject parses the first supported legacy project config found in dir.
 func ReadProject(dir string) (*ProjectConfig, error) {
 	path := findConfigFile(dir)
 	if path == "" {
 		return nil, fmt.Errorf("no config file found in %s", dir)
 	}
+	return readProjectFile(path, false)
+}
 
+// ReadClaudeProject parses the exact CLAUDE.md source in dir. It never falls
+// back to another adapter's config file.
+func ReadClaudeProject(dir string) (*ProjectConfig, error) {
+	return readProjectFile(filepath.Join(dir, "CLAUDE.md"), true)
+}
+
+func readProjectFile(path string, strict bool) (*ProjectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	content := string(data)
 	cfg := &ProjectConfig{}
 
 	// Parse Consilium table
-	consiliumSection := extractSection(content, "Consilium", "Executing")
+	consiliumSection := extractSection(content, "Consilium", "Executing", "Models")
 	if consiliumSection != "" {
+		if strict {
+			if err := validateTableRows(consiliumSection, "Role", "Agent"); err != nil {
+				return nil, fmt.Errorf("malformed Consilium table in %s: %w", path, err)
+			}
+		}
 		cfg.Consilium = parseConsiliumTable(consiliumSection)
 	}
 
 	// Parse Executing table
 	execSection := extractSection(content, "Executing", "Models")
 	if execSection != "" {
+		if strict {
+			if err := validateTableRows(execSection, "Agent", "Scope"); err != nil {
+				return nil, fmt.Errorf("malformed Executing table in %s: %w", path, err)
+			}
+		}
 		cfg.Exec = parseExecTable(execSection)
 	}
 
 	// Parse Models table
 	modelsSection := extractSection(content, "Models", "")
 	if modelsSection != "" {
+		if strict {
+			if err := validateTableRows(modelsSection, "Role", "Tier", "Model"); err != nil {
+				return nil, fmt.Errorf("malformed Models table in %s: %w", path, err)
+			}
+		}
 		cfg.Models = parseModelsTable(modelsSection)
 	}
 
@@ -54,6 +78,55 @@ func ReadProject(dir string) (*ProjectConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func validateTableRows(section, firstHeader string, secondHeaders ...string) error {
+	var rows [][]string
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		if !strings.HasSuffix(line, "|") {
+			return fmt.Errorf("invalid table row %q", line)
+		}
+		parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(line, "|"), "|"), "|")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid table row %q: expected 2 cells, got %d", line, len(parts))
+		}
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		rows = append(rows, parts)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if rows[0][0] != firstHeader || !containsString(secondHeaders, rows[0][1]) {
+		return fmt.Errorf("invalid table header %q | %q", rows[0][0], rows[0][1])
+	}
+	if len(rows) < 2 || !separatorCell(rows[1][0]) || !separatorCell(rows[1][1]) {
+		return fmt.Errorf("table requires a two-cell separator row")
+	}
+	for _, row := range rows[2:] {
+		if row[0] == "" || row[1] == "" {
+			return fmt.Errorf("table data cells must not be empty")
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func separatorCell(cell string) bool {
+	return len(cell) >= 3 && strings.Trim(cell, "-") == ""
 }
 
 // SetAgent modifies a consilium role in the project config
@@ -103,12 +176,12 @@ func findConfigFile(dir string) string {
 	return ""
 }
 
-func extractSection(content, startHeader, endHeader string) string {
+func extractSection(content, startHeader string, endHeaders ...string) string {
 	// Support both English and Russian headers
 	aliases := map[string][]string{
 		"Consilium": {"Consilium", "Консилиум"},
 		"Executing": {"Executing"},
-		"Models":    {"Models", "Модели"},
+		"Models":    {"Model tiers", "Models", "Модели"},
 	}
 
 	startHeaders := aliases[startHeader]
@@ -132,16 +205,18 @@ func extractSection(content, startHeader, endHeader string) string {
 	startIdx += headerLen
 
 	endIdx := len(content)
-	if endHeader != "" {
-		endHeaders := aliases[endHeader]
-		if endHeaders == nil {
-			endHeaders = []string{endHeader}
+	for _, endHeader := range endHeaders {
+		if endHeader == "" {
+			continue
 		}
-		for _, h := range endHeaders {
+		headers := aliases[endHeader]
+		if headers == nil {
+			headers = []string{endHeader}
+		}
+		for _, h := range headers {
 			idx := strings.Index(content[startIdx:], "### "+h)
-			if idx != -1 {
+			if idx != -1 && startIdx+idx < endIdx {
 				endIdx = startIdx + idx
-				break
 			}
 		}
 	}

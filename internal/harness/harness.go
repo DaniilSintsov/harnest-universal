@@ -7,62 +7,36 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
 )
 
 type Generator interface {
-	Generate(projectDir string, stacks []detector.Stack, agents mapping.AgentConfig) (string, error)
+	Generate(projectDir string, project ir.Project) (string, error)
+}
+
+type capabilityProvider interface {
+	Capabilities() ir.Capabilities
 }
 
 // HarnessInfo holds metadata about a harness for agent discovery.
 type HarnessInfo struct {
 	Generator Generator
-	// AgentDir is the relative path under $HOME where this harness stores custom agents.
+	// AgentDir is the project-relative path where this harness stores custom agents.
 	// Empty means no custom agent dir.
 	AgentDir string
-	// GlobalConfigFile is the filename for this harness's global config (e.g. "CLAUDE.md", ".cursorrules").
+	// ProjectSkillsDir is the native project-relative skill directory.
+	ProjectSkillsDir string
+	// ConfigEnv overrides the harness global config directory.
+	ConfigEnv string
+	// DefaultConfigDir is the config directory relative to the user home.
+	DefaultConfigDir string
+	// GlobalConfigFile is the filename for this harness's global config.
 	GlobalConfigFile string
 }
 
 var registry = map[string]HarnessInfo{
-	"claude-code": {Generator: &ClaudeCodeGenerator{}, AgentDir: ".claude/agents", GlobalConfigFile: "CLAUDE.md"},
-	"cursor":      {Generator: &CursorGenerator{}, AgentDir: ".cursor/agents", GlobalConfigFile: ".cursorrules"},
-	"windsurf":    {Generator: &WindsurfGenerator{}, AgentDir: ".windsurf/agents", GlobalConfigFile: ".windsurfrules"},
-	"codex":       {Generator: &CodexGenerator{}, AgentDir: ".codex/agents", GlobalConfigFile: "AGENTS.md"},
-	"opencode":    {Generator: &OpenCodeGenerator{}, AgentDir: ".config/opencode/agents", GlobalConfigFile: "AGENTS.md"},
-	"qwen-code":   {Generator: &QwenCodeGenerator{}, AgentDir: ".qwen/agents", GlobalConfigFile: "QWEN.md"},
-}
-
-// TierMap maps capability tier to concrete model name for a harness.
-type TierMap map[string]string
-
-var tierMaps = map[string]TierMap{
-	"claude-code": {"high": "opus", "medium": "sonnet", "low": "haiku"},
-	"cursor":      {"high": "claude-sonnet-4", "medium": "claude-sonnet-4", "low": "claude-haiku"},
-	"windsurf":    {"high": "claude-sonnet-4", "medium": "claude-sonnet-4", "low": "claude-haiku"},
-	"codex":       {"high": "o3", "medium": "o4-mini", "low": "o4-mini"},
-	"opencode":    {"high": "anthropic:claude-sonnet-4", "medium": "anthropic:claude-sonnet-4", "low": "anthropic:claude-haiku"},
-	"qwen-code":   {"high": "qwen-max", "medium": "qwen-plus", "low": "qwen-turbo"},
-}
-
-// ResolveTier converts a capability tier (high/medium/low) to a concrete model name
-// for the given harness. Returns tier unchanged if harness or tier not found.
-func ResolveTier(harnessName, tier string) string {
-	tm, ok := tierMaps[harnessName]
-	if !ok {
-		return tier
-	}
-	model, ok := tm[tier]
-	if !ok {
-		return tier // already a concrete model name
-	}
-	return model
-}
-
-// GetTierMap returns the tier→model mapping for a harness. Returns nil if not found.
-func GetTierMap(harnessName string) TierMap {
-	return tierMaps[harnessName]
+	"claude-code": {Generator: &ClaudeCodeGenerator{}, AgentDir: ".claude/agents", ProjectSkillsDir: ".claude/skills", ConfigEnv: "CLAUDE_CONFIG_DIR", DefaultConfigDir: ".claude", GlobalConfigFile: "CLAUDE.md"},
+	"codex":       {Generator: &CodexGenerator{}, AgentDir: ".codex/agents", ProjectSkillsDir: ".agents/skills", ConfigEnv: "CODEX_HOME", DefaultConfigDir: ".codex", GlobalConfigFile: "AGENTS.md"},
 }
 
 func Get(name string) (Generator, error) {
@@ -71,6 +45,18 @@ func Get(name string) (Generator, error) {
 		return nil, fmt.Errorf("unknown harness: %s (available: %s)", name, strings.Join(Names(), ", "))
 	}
 	return h.Generator, nil
+}
+
+// Capabilities reports what an adapter can preserve natively.
+func Capabilities(name string) (ir.Capabilities, error) {
+	gen, err := Get(name)
+	if err != nil {
+		return ir.Capabilities{}, err
+	}
+	if provider, ok := gen.(capabilityProvider); ok {
+		return provider.Capabilities(), nil
+	}
+	return ir.Capabilities{Instructions: ir.Native}, nil
 }
 
 // Names returns sorted list of all registered harness names.
@@ -83,23 +69,24 @@ func Names() []string {
 	return names
 }
 
-// GlobalDir returns the absolute path to a harness's home directory.
-// Derived from AgentDir's parent joined with $HOME.
+// GlobalDir returns the absolute path to a harness's config directory.
 func GlobalDir(name string) (string, error) {
 	h, ok := registry[name]
 	if !ok {
 		return "", fmt.Errorf("unknown harness: %s (available: %s)", name, strings.Join(Names(), ", "))
 	}
-	if h.AgentDir == "" {
-		return "", fmt.Errorf("harness %s has no agent dir configured", name)
+	if configured := strings.TrimSpace(os.Getenv(h.ConfigEnv)); configured != "" {
+		path, err := filepath.Abs(configured)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", h.ConfigEnv, err)
+		}
+		return filepath.Clean(path), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	// AgentDir is like ".cursor/agents" — parent is ".cursor"
-	parent := filepath.Dir(h.AgentDir)
-	return filepath.Join(home, parent), nil
+	return filepath.Join(home, h.DefaultConfigDir), nil
 }
 
 // GlobalConfigPath returns the absolute path to a harness's global config file.
@@ -115,6 +102,45 @@ func GlobalConfigPath(name string) (string, error) {
 	return filepath.Join(dir, h.GlobalConfigFile), nil
 }
 
+// GlobalSkillsDir returns the native global skill directory for a harness.
+func GlobalSkillsDir(name string) (string, error) {
+	if _, ok := registry[name]; !ok {
+		return "", fmt.Errorf("unknown harness: %s (available: %s)", name, strings.Join(Names(), ", "))
+	}
+	if name == "claude-code" {
+		dir, err := GlobalDir(name)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, "skills"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".agents", "skills"), nil
+}
+
+// GlobalAgentDir returns the native global agent directory for one harness.
+func GlobalAgentDir(name string) (string, error) {
+	dir, err := GlobalDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "agents"), nil
+}
+
+// GlobalAgentDirs returns all configured native global agent directories.
+func GlobalAgentDirs() []string {
+	var dirs []string
+	for _, name := range Names() {
+		if dir, err := GlobalAgentDir(name); err == nil {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
+}
+
 // AgentDirs returns all agent directory paths (relative to $HOME) from registered harnesses.
 func AgentDirs() []string {
 	var dirs []string
@@ -125,4 +151,37 @@ func AgentDirs() []string {
 	}
 	sort.Strings(dirs)
 	return dirs
+}
+
+// AgentDir returns the configured global agent directory relative to HOME.
+func AgentDir(name string) (string, error) {
+	h, ok := registry[name]
+	if !ok {
+		return "", fmt.Errorf("unknown harness: %s", name)
+	}
+	return h.AgentDir, nil
+}
+
+// ProjectSkillsDir returns the native project-relative skill directory.
+func ProjectSkillsDir(name string) (string, error) {
+	h, ok := registry[name]
+	if !ok {
+		return "", fmt.Errorf("unknown harness: %s", name)
+	}
+	return h.ProjectSkillsDir, nil
+}
+
+// Installed returns harnesses whose global directory already exists.
+func Installed(names ...string) []string {
+	var installed []string
+	for _, name := range names {
+		dir, err := GlobalDir(name)
+		if err != nil {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			installed = append(installed, name)
+		}
+	}
+	return installed
 }

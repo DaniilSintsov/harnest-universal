@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -90,8 +92,8 @@ func TestDiscoverProject_NonExistent(t *testing.T) {
 	}
 }
 
-func TestDiscoverProject_MultiHarness(t *testing.T) {
-	// Agents in different harness dirs should all be discovered
+func TestDiscoverProject_SupportedHarnessesOnly(t *testing.T) {
+	// Only agents from registered harness dirs should be discovered.
 	tmpDir := t.TempDir()
 
 	// claude-code
@@ -126,11 +128,11 @@ func TestDiscoverProject_MultiHarness(t *testing.T) {
 
 	agents := DiscoverProject(tmpDir)
 
-	if len(agents) != 6 {
-		t.Fatalf("expected 6 agents from all harness dirs, got %d: %v", len(agents), agents)
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 agents from supported harness dirs, got %d: %v", len(agents), agents)
 	}
 
-	expected := []string{"claude-expert", "codex-expert", "cursor-expert", "opencode-expert", "qwen-expert", "windsurf-expert"}
+	expected := []string{"claude-expert", "codex-expert"}
 	for i, a := range agents {
 		if a != expected[i] {
 			t.Errorf("agent[%d]: expected %q, got %q", i, expected[i], a)
@@ -339,6 +341,263 @@ func TestScanPlugins_EmptyAgentsField(t *testing.T) {
 
 	if !contains(agents, "mixed-plugin:from-dir") {
 		t.Error("expected mixed-plugin:from-dir from agents/ dir despite empty agents field")
+	}
+}
+
+func TestDiscoverForTargetKeepsPlatformProvenance(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	writeFile(t, filepath.Join(project, ".agents", "agents", "portable.md"), "---\nname: architect\n---\n")
+	writeFile(t, filepath.Join(project, ".claude", "agents", "claude-only.md"), "---\nname: claude-only\n---\n")
+	writeFile(t, filepath.Join(home, ".codex", "agents", "codex-only.toml"), "# codex")
+	writeFile(t, filepath.Join(home, ".codex", "agents", "legacy-codex.md"), "legacy")
+	writeFile(t, filepath.Join(project, ".codex", "agents", "filename-is-not-identity.toml"), "name = \"native-name\"\ndescription = \"test\"\ndeveloper_instructions = \"test\"\n")
+
+	got := DiscoverForTarget(project, "codex")
+	if !contains(got, "architect") || !contains(got, "codex-only") || !contains(got, "legacy-codex") || !contains(got, "native-name") {
+		t.Fatalf("missing portable/codex agents: %v", got)
+	}
+	if contains(got, "filename-is-not-identity") {
+		t.Fatalf("Codex TOML filename replaced its canonical name: %v", got)
+	}
+	if contains(got, "portable:architect") {
+		t.Fatalf("portable agent exposed a non-callable synthetic ID: %v", got)
+	}
+	if contains(got, "claude-only") {
+		t.Fatalf("Claude-only agent leaked into Codex discovery: %v", got)
+	}
+}
+
+func TestMaterializePortableCopiesOnlySelectedTargetsAndBacksUpCollision(t *testing.T) {
+	project := t.TempDir()
+	source := "---\nname: architect\ndescription: portable\n---\nInstructions.\n"
+	writeFile(t, filepath.Join(project, ".agents", "agents", "portable.md"), source)
+	claudePath := filepath.Join(project, ".claude", "agents", "architect.md")
+	writeFile(t, claudePath, "user-owned agent\n")
+
+	files, err := MaterializePortable(project, []string{"claude-code", "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("materialized files = %v, want two selected targets", files)
+	}
+	claudeData, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := string(claudeData); !strings.HasPrefix(content, "---\nname: architect\n") || !strings.Contains(content, portableOwnershipMarker) {
+		t.Fatalf("Claude agent is not callable/managed: %q", content)
+	}
+	codexPath := filepath.Join(project, ".codex", "agents", "architect.toml")
+	codexData, err := os.ReadFile(codexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`name = "architect"`,
+		`description = "portable"`,
+		`developer_instructions = "Instructions.\n"`,
+		portableCodexOwnershipMarker,
+	} {
+		if !strings.Contains(string(codexData), want) {
+			t.Fatalf("Codex agent missing %q: %s", want, codexData)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(project, ".cursor", "agents", "architect.md")); !os.IsNotExist(err) {
+		t.Fatalf("unselected target was materialized: %v", err)
+	}
+	backup, err := os.ReadFile(claudePath + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != "user-owned agent\n" {
+		t.Fatalf("collision backup = %q", backup)
+	}
+}
+
+func TestMaterializePortableRejectsUnsafeCallableName(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, filepath.Join(project, ".agents", "agents", "portable.md"), "---\nname: ../escape\n---\nbody\n")
+
+	if _, err := MaterializePortable(project, []string{"codex"}); err == nil {
+		t.Fatal("unsafe portable agent name was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(project, ".codex", "escape.toml")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe agent escaped target directory: %v", err)
+	}
+}
+
+func TestMaterializePortableKeepsOriginalCollisionBackupAcrossUpdates(t *testing.T) {
+	project := t.TempDir()
+	sourcePath := filepath.Join(project, ".agents", "agents", "portable.md")
+	targetPath := filepath.Join(project, ".codex", "agents", "architect.toml")
+	writeFile(t, sourcePath, "---\nname: architect\n---\nversion one\n")
+	writeFile(t, targetPath, "original user agent\n")
+
+	if _, err := MaterializePortable(project, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, sourcePath, "---\nname: architect\n---\nversion two\n")
+	if _, err := MaterializePortable(project, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := os.ReadFile(targetPath + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != "original user agent\n" {
+		t.Fatalf("managed update replaced original collision backup: %q", backup)
+	}
+	target, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(target), "version two") {
+		t.Fatalf("managed target was not updated: %q", target)
+	}
+}
+
+func TestMaterializePortableRestoresCollisionWhenSourceRemoved(t *testing.T) {
+	project := t.TempDir()
+	sourcePath := filepath.Join(project, ".agents", "agents", "portable.md")
+	targetPath := filepath.Join(project, ".claude", "agents", "architect.md")
+	writeFile(t, sourcePath, "---\nname: architect\n---\nportable\n")
+	writeFile(t, targetPath, "original user agent\n")
+	if _, err := MaterializePortable(project, []string{"claude-code"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := MaterializePortable(project, []string{"claude-code"}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != "original user agent\n" {
+		t.Fatalf("collision was not restored: %q", restored)
+	}
+}
+
+func TestMaterializePortableBacksUpStaleOwnedAgentWhenSourceDirRemoved(t *testing.T) {
+	project := t.TempDir()
+	sourceDir := filepath.Join(project, ".agents", "agents")
+	targetPath := filepath.Join(project, ".codex", "agents", "architect.toml")
+	writeFile(t, filepath.Join(sourceDir, "portable.md"), "---\nname: architect\n---\nportable\n")
+	if _, err := MaterializePortable(project, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := MaterializePortable(project, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("stale owned agent still exists: %v", err)
+	}
+	sum := sha256.Sum256(desired)
+	backupPath := fmt.Sprintf("%s.deleted-%x.bak", targetPath, sum[:6])
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != string(desired) {
+		t.Fatalf("stale backup = %q", backup)
+	}
+}
+
+func TestMaterializePortableCodexEscapesTOMLAndCleansLegacyMarkdown(t *testing.T) {
+	project := t.TempDir()
+	source := "---\nname: reviewer\ndescription: Проверяет \"сложное\"\n---\nUse \"quotes\", \\slashes and \"\"\" blocks.\r\n"
+	writeFile(t, filepath.Join(project, ".agents", "agents", "reviewer.md"), source)
+	legacyPath := filepath.Join(project, ".codex", "agents", "reviewer.md")
+	writeFile(t, legacyPath, "---\nname: reviewer\n---\nold\n\n"+portableOwnershipMarker+"\n")
+
+	if _, err := MaterializePortable(project, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy managed Codex markdown still exists: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(project, ".codex", "agents", "reviewer.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`name = "reviewer"`,
+		`description = "Проверяет \"сложное\""`,
+		`developer_instructions = "Use \"quotes\", \\slashes and \"\"\" blocks.\n"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("native Codex TOML missing %q: %s", want, data)
+		}
+	}
+}
+
+func TestMaterializePortableNeverTouchesUnmanagedTargetWhenSourcesMissing(t *testing.T) {
+	project := t.TempDir()
+	targetPath := filepath.Join(project, ".codex", "agents", "user.md")
+	writeFile(t, targetPath, "user agent\n")
+	unknownMarkerPath := filepath.Join(project, ".codex", "agents", "other.md")
+	writeFile(t, unknownMarkerPath, "agent\n<!-- harnest-portable-agent:other -->\n")
+	indentedMarkerPath := filepath.Join(project, ".codex", "agents", "indented.md")
+	writeFile(t, indentedMarkerPath, "agent\n  "+portableOwnershipMarker+"\n")
+
+	if _, err := MaterializePortable(project, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{
+		targetPath:         "user agent\n",
+		unknownMarkerPath:  "agent\n<!-- harnest-portable-agent:other -->\n",
+		indentedMarkerPath: "agent\n  " + portableOwnershipMarker + "\n",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != want {
+			t.Fatalf("unmanaged target %s changed: %q", path, data)
+		}
+	}
+}
+
+func TestPortablePathsPreviewsCleanupWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, ".codex", "agents", "stale.toml")
+	content := "name = \"stale\"\n" + portableCodexOwnershipMarker + "\n"
+	writeFile(t, stale, content)
+
+	paths, err := PortablePaths(dir, []string{"codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(paths, stale+" (remove)") {
+		t.Fatalf("cleanup preview missing: %v", paths)
+	}
+	if got, err := os.ReadFile(stale); err != nil || string(got) != content {
+		t.Fatalf("preview changed stale file: %q, %v", got, err)
+	}
+}
+
+func TestPortablePathsRejectsUnknownOwnershipMarker(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".agents", "agents", "architect.md"), "---\nname: architect\n---\n")
+	writeFile(t, filepath.Join(dir, ".codex", "agents", "architect.toml"), "# harnest-portable-agent:future\n")
+	if _, err := PortablePaths(dir, []string{"codex"}); err == nil || !strings.Contains(err.Error(), "unknown portable-agent ownership marker") {
+		t.Fatalf("PortablePaths() error = %v", err)
 	}
 }
 
