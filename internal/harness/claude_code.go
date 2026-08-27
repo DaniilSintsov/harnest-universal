@@ -2,20 +2,36 @@ package harness
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
+	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
 )
 
 type ClaudeCodeGenerator struct{}
 
-func (g *ClaudeCodeGenerator) Generate(projectDir string, stacks []detector.Stack, agents mapping.AgentConfig) (string, error) {
-	var b strings.Builder
+func (g *ClaudeCodeGenerator) Capabilities() ir.Capabilities {
+	return ir.Capabilities{
+		Instructions: ir.Native,
+		ScopedRules:  ir.Fallback,
+		Skills:       ir.Native,
+		Agents:       ir.Native,
+		PreToolHook:  ir.Unsupported,
+		PostToolHook: ir.Unsupported,
+		Permissions:  ir.Fallback,
+		Verification: ir.Fallback,
+	}
+}
 
-	projectName := filepath.Base(projectDir)
+func (g *ClaudeCodeGenerator) Generate(projectDir string, project ir.Project) (string, error) {
+	var b strings.Builder
+	stacks, agents := project.Stacks, project.Agents
+
+	projectName := project.Name
+	if projectName == "" {
+		projectName = filepath.Base(projectDir)
+	}
 
 	b.WriteString(fmt.Sprintf("# %s\n\n", projectName))
 
@@ -26,37 +42,37 @@ func (g *ClaudeCodeGenerator) Generate(projectDir string, stacks []detector.Stac
 	}
 	b.WriteString("\n")
 
-	// Agents section
-	b.WriteString("## Agents\n\n")
-
-	// Consilium
-	b.WriteString("### Consilium\n")
-	b.WriteString("| Role | Agent |\n")
-	b.WriteString("|------|-------|\n")
-	for _, c := range agents.Consilium {
-		if c.Agent == "" {
-			continue
+	if hasAssignedConsilium(agents) || hasAssignedExec(agents) {
+		b.WriteString("## Agents\n\n")
+		if hasAssignedConsilium(agents) {
+			b.WriteString("### Consilium\n")
+			b.WriteString("| Role | Agent |\n")
+			b.WriteString("|------|-------|\n")
+			for _, c := range agents.Consilium {
+				if c.Agent != "" {
+					b.WriteString(fmt.Sprintf("| %s | %s |\n", c.Role, c.Agent))
+				}
+			}
+			b.WriteString("\n")
 		}
-		b.WriteString(fmt.Sprintf("| %s | %s |\n", c.Role, c.Agent))
-	}
-	b.WriteString("\n")
-
-	// Executing
-	b.WriteString("### Executing\n")
-	b.WriteString("| Agent | Scope |\n")
-	b.WriteString("|-------|-------|\n")
-	for _, e := range agents.Exec {
-		if e.Agent == "" {
-			continue
+		if hasAssignedExec(agents) {
+			b.WriteString("### Executing\n")
+			b.WriteString("| Agent | Scope |\n")
+			b.WriteString("|-------|-------|\n")
+			for _, e := range agents.Exec {
+				if e.Agent != "" {
+					b.WriteString(fmt.Sprintf("| %s | %s |\n", e.Agent, e.Scope))
+				}
+			}
+			b.WriteString("\n")
 		}
-		b.WriteString(fmt.Sprintf("| %s | %s |\n", e.Agent, e.Scope))
 	}
-	b.WriteString("\n")
 
 	// Models
-	if len(agents.Models) > 0 {
-		b.WriteString("### Models\n")
-		b.WriteString("| Role | Model |\n")
+	if len(agents.Models) > 0 && hasAssignedConsilium(agents) {
+		b.WriteString("### Model tiers\n")
+		b.WriteString("Concrete models come from the user adapter mapping; otherwise the platform default is used.\n\n")
+		b.WriteString("| Role | Tier |\n")
 		b.WriteString("|------|-------|\n")
 		for _, c := range agents.Consilium {
 			if c.Agent == "" {
@@ -66,22 +82,15 @@ func (g *ClaudeCodeGenerator) Generate(projectDir string, stacks []detector.Stac
 			if tier == "" {
 				tier = "medium"
 			}
-			model := ResolveTier("claude-code", tier)
-			b.WriteString(fmt.Sprintf("| %s | %s |\n", c.Role, model))
+			b.WriteString(fmt.Sprintf("| %s | %s |\n", c.Role, tier))
 		}
-		b.WriteString("| * | sonnet |\n")
 		b.WriteString("\n")
 	}
 
+	b.WriteString(renderControlPlane(project))
+
 	outPath := filepath.Join(projectDir, "CLAUDE.md")
-
-	// Don't overwrite existing
-	if _, err := os.Stat(outPath); err == nil {
-		outPath = filepath.Join(projectDir, "CLAUDE.generated.md")
-	}
-
-	err := os.WriteFile(outPath, []byte(b.String()), 0644)
-	if err != nil {
+	if err := managedfile.UpsertWithMode(outPath, "harnest", b.String(), 0644); err != nil {
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture Context Builder"
+  short_description: "Build task-routed architecture context"
+  default_prompt: "Use $architecture-context-builder to build or refresh architecture context for this repository."

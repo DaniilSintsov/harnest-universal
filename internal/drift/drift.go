@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	agents_pkg "github.com/AlexGladkov/harnest/internal/agents"
-	"github.com/AlexGladkov/harnest/internal/config"
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/mapping"
+	agents_pkg "github.com/daniilsintsov/harnest-universal/internal/agents"
+	"github.com/daniilsintsov/harnest-universal/internal/config"
+	"github.com/daniilsintsov/harnest-universal/internal/detector"
+	"github.com/daniilsintsov/harnest-universal/internal/mapping"
+	harnestYaml "github.com/daniilsintsov/harnest-universal/internal/yaml"
 )
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,16 @@ type DriftResult struct {
 // meaningful analysis is possible (e.g. no config file found).  A non-nil
 // result with an empty Items slice means no drift was detected.
 func Check(dir string) (*DriftResult, error) {
+	if harnestYaml.Exists(dir) {
+		cfg, err := harnestYaml.Load(dir)
+		if err != nil {
+			return nil, fmt.Errorf("reading harnest.yaml: %w", err)
+		}
+		if cfg.Version == harnestYaml.CurrentVersion {
+			return nil, fmt.Errorf("harnest drift does not support schema v%d; only legacy schema v1 agent configs are supported", cfg.Version)
+		}
+	}
+
 	// 1. Read existing project config.
 	cfg, err := config.ReadProject(dir)
 	if err != nil {
@@ -120,7 +131,7 @@ func Check(dir string) (*DriftResult, error) {
 	stacks := detector.Detect(dir)
 
 	// 3. Discover installed agents and build a lookup set.
-	discovered := agents_pkg.Discover(dir)
+	discovered := agents_pkg.DiscoverForTarget(dir, harness)
 	agentSet := make(map[string]bool, len(discovered))
 	for _, a := range discovered {
 		agentSet[a] = true
@@ -384,7 +395,7 @@ func agentKnown(agentName string, agentSet map[string]bool) bool {
 
 	// Well-known harness built-in agents that are never installed on disk.
 	switch agentName {
-	case "general-purpose":
+	case mapping.AutoAgent, "general-purpose":
 		return true
 	}
 

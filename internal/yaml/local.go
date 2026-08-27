@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
 	goyaml "gopkg.in/yaml.v3"
 )
 
@@ -12,7 +13,7 @@ const localConfigFileName = ".harnest-local.yaml"
 
 const localFileHeader = `# .harnest-local.yaml — personal overrides for harnest.yaml.
 # This file is intentionally gitignored. It applies on top of the team config.
-# Documentation: https://github.com/AlexGladkov/harnest
+# Documentation: see the README bundled with this Harnest build.
 `
 
 // LocalConfig represents personal overrides stored in .harnest-local.yaml.
@@ -58,7 +59,7 @@ func SaveLocal(dir string, cfg *LocalConfig) error {
 	path := filepath.Join(dir, localConfigFileName)
 	content := localFileHeader + "\n" + string(data)
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := managedfile.WriteAtomic(path, []byte(content), 0644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 

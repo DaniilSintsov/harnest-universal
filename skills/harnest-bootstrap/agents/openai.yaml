@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harnest Bootstrap"
+  short_description: "Build deep reusable project context"
+  default_prompt: "Use $harnest-bootstrap to deeply bootstrap Harnest for this repository."

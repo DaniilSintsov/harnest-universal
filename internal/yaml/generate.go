@@ -5,13 +5,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
-	"github.com/AlexGladkov/harnest/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/agents"
+	"github.com/daniilsintsov/harnest-universal/internal/detector"
+	"github.com/daniilsintsov/harnest-universal/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
+	projectSkills "github.com/daniilsintsov/harnest-universal/internal/skills"
 )
 
 const gitignoreMarker = "# Harnest generated"
+
+const localExcludeMarker = "# Harnest local"
 
 // Generate produces config files for all harnesses listed in cfg.Harnesses.
 // For each harness it:
@@ -29,25 +35,39 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 		return nil, fmt.Errorf("config must not be nil")
 	}
 
-	if LocalExists(dir) {
-		local, err := LoadLocal(dir)
-		if err == nil && local != nil {
-			cfg = Merge(cfg, local)
-		}
+	project, err := BuildIR(dir, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTargets(project.Targets); err != nil {
+		return nil, err
+	}
+	if err := validateAdapterOutputs(dir, project.Targets); err != nil {
+		return nil, err
+	}
+	if _, err := projectSkills.Materialize(dir, project.Skills.Root, project.Targets, true); err != nil {
+		return nil, err
+	}
+	if _, err := agents.PortablePaths(dir, project.Targets); err != nil {
+		return nil, err
 	}
 
-	stacks := resolveStacks(dir, cfg)
-	agentConfig := cfg.ToAgentConfig()
-
 	var generated []string
+	skillFiles, err := projectSkills.Materialize(dir, project.Skills.Root, project.Targets, false)
+	if err != nil {
+		return nil, err
+	}
+	generated = append(generated, skillFiles...)
+	portableFiles, err := agents.MaterializePortable(dir, project.Targets)
+	if err != nil {
+		return nil, err
+	}
+	generated = append(generated, portableFiles...)
 
-	for _, harnessName := range cfg.Harnesses {
-		gen, err := harness.Get(harnessName)
-		if err != nil {
-			return generated, fmt.Errorf("harness %q: %w", harnessName, err)
-		}
+	for _, harnessName := range project.Targets {
+		gen, _ := harness.Get(harnessName)
 
-		outPath, err := gen.Generate(dir, stacks, agentConfig)
+		outPath, err := gen.Generate(dir, project)
 		if err != nil {
 			return generated, fmt.Errorf("generating %q: %w", harnessName, err)
 		}
@@ -58,9 +78,15 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 	return generated, nil
 }
 
-// GenerateDryRun returns what would be generated for each harness without
-// writing any files to disk. The returned map keys are harness names and
-// values are the content strings that would be written.
+// DryRunResult contains adapter content and every project path generation would
+// create, update, or remove.
+type DryRunResult struct {
+	Adapters map[string]string
+	Files    []string
+}
+
+// GenerateDryRun previews adapter, portable-agent, and portable-skill outputs
+// without writing project files.
 //
 // If .harnest-local.yaml exists in dir, its overrides are merged into cfg
 // before generation. The caller's cfg value is never mutated.
@@ -68,36 +94,44 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 // Note: because harness generators currently write files as a side effect of
 // Generate, this function simulates the output by temporarily redirecting
 // writes to a temp directory and reading back the result.
-func GenerateDryRun(dir string, cfg *HarnestConfig) (map[string]string, error) {
+func GenerateDryRun(dir string, cfg *HarnestConfig) (DryRunResult, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("config must not be nil")
+		return DryRunResult{}, fmt.Errorf("config must not be nil")
 	}
 
-	if LocalExists(dir) {
-		local, err := LoadLocal(dir)
-		if err == nil && local != nil {
-			cfg = Merge(cfg, local)
-		}
+	project, err := BuildIR(dir, cfg)
+	if err != nil {
+		return DryRunResult{}, err
 	}
-
-	stacks := resolveStacks(dir, cfg)
-	agentConfig := cfg.ToAgentConfig()
+	if err := validateTargets(project.Targets); err != nil {
+		return DryRunResult{}, err
+	}
+	if err := validateAdapterOutputs(dir, project.Targets); err != nil {
+		return DryRunResult{}, err
+	}
+	skillFiles, err := projectSkills.Materialize(dir, project.Skills.Root, project.Targets, true)
+	if err != nil {
+		return DryRunResult{}, err
+	}
+	agentFiles, err := agents.PortablePaths(dir, project.Targets)
+	if err != nil {
+		return DryRunResult{}, err
+	}
 
 	tmpDir, err := os.MkdirTemp("", "harnest-dryrun-*")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir for dry run: %w", err)
+		return DryRunResult{}, fmt.Errorf("creating temp dir for dry run: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	results := make(map[string]string, len(cfg.Harnesses))
+	results := DryRunResult{Adapters: make(map[string]string, len(project.Targets))}
+	results.Files = append(results.Files, skillFiles...)
+	results.Files = append(results.Files, agentFiles...)
 
-	for _, harnessName := range cfg.Harnesses {
-		gen, err := harness.Get(harnessName)
-		if err != nil {
-			return results, fmt.Errorf("harness %q: %w", harnessName, err)
-		}
+	for _, harnessName := range project.Targets {
+		gen, _ := harness.Get(harnessName)
 
-		outPath, err := gen.Generate(tmpDir, stacks, agentConfig)
+		outPath, err := gen.Generate(tmpDir, project)
 		if err != nil {
 			return results, fmt.Errorf("dry-run generating %q: %w", harnessName, err)
 		}
@@ -107,10 +141,47 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (map[string]string, error) {
 			return results, fmt.Errorf("reading dry-run output for %q: %w", harnessName, err)
 		}
 
-		results[harnessName] = string(data)
+		results.Adapters[harnessName] = string(data)
+		results.Files = append(results.Files, adapterOutputPath(dir, harnessName))
 	}
-
+	sort.Strings(results.Files)
 	return results, nil
+}
+
+func validateTargets(targets []string) error {
+	if len(targets) == 0 {
+		return fmt.Errorf("harnesses must contain at least one target")
+	}
+	seen := map[string]bool{}
+	for _, target := range targets {
+		if target == "" {
+			return fmt.Errorf("harness target must not be empty")
+		}
+		if seen[target] {
+			return fmt.Errorf("duplicate harness target %q", target)
+		}
+		seen[target] = true
+		if _, err := harness.Get(target); err != nil {
+			return fmt.Errorf("harness %q: %w", target, err)
+		}
+	}
+	return nil
+}
+
+func adapterOutputPath(dir, target string) string {
+	if target == "claude-code" {
+		return filepath.Join(dir, "CLAUDE.md")
+	}
+	return filepath.Join(dir, "AGENTS.md")
+}
+
+func validateAdapterOutputs(dir string, targets []string) error {
+	for _, target := range targets {
+		if err := managedfile.ValidateUpsert(adapterOutputPath(dir, target), "harnest"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpdateGitignore adds the generated file paths to the project's .gitignore
@@ -119,7 +190,7 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (map[string]string, error) {
 //
 // .harnest-local.yaml is always included so personal overrides are never
 // accidentally committed, regardless of whether any other files were generated.
-func UpdateGitignore(dir string, files []string) error {
+func UpdateGitignore(dir string, files []string) (bool, error) {
 	// Always gitignore the local overrides file.
 	files = unionStrings(files, []string{localConfigFileName})
 
@@ -127,7 +198,7 @@ func UpdateGitignore(dir string, files []string) error {
 
 	existing, err := readGitignoreEntries(gitignorePath)
 	if err != nil {
-		return fmt.Errorf("reading .gitignore: %w", err)
+		return false, fmt.Errorf("reading .gitignore: %w", err)
 	}
 
 	// Compute relative paths and filter out already-present entries.
@@ -143,12 +214,12 @@ func UpdateGitignore(dir string, files []string) error {
 	}
 
 	if len(missing) == 0 {
-		return nil
+		return false, nil
 	}
 
 	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("opening .gitignore: %w", err)
+		return false, fmt.Errorf("opening .gitignore: %w", err)
 	}
 	defer f.Close()
 
@@ -160,10 +231,101 @@ func UpdateGitignore(dir string, files []string) error {
 	}
 
 	if _, err := f.WriteString(sb.String()); err != nil {
-		return fmt.Errorf("writing .gitignore entries: %w", err)
+		return false, fmt.Errorf("writing .gitignore entries: %w", err)
 	}
 
-	return nil
+	return true, nil
+}
+
+// UpdateLocalExclude keeps Harnest-owned project files local without changing
+// the repository's tracked .gitignore.
+func UpdateLocalExclude(dir string, files []string) (bool, error) {
+	gitDir := filepath.Join(dir, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		data, err := os.ReadFile(gitDir)
+		if err != nil {
+			return false, err
+		}
+		value := strings.TrimSpace(string(data))
+		if !strings.HasPrefix(value, "gitdir:") {
+			return false, fmt.Errorf("invalid .git file")
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(value, "gitdir:"))
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(dir, gitDir)
+		}
+		if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+			commonDir := strings.TrimSpace(string(common))
+			if !filepath.IsAbs(commonDir) {
+				commonDir = filepath.Join(gitDir, commonDir)
+			}
+			gitDir = filepath.Clean(commonDir)
+		}
+	}
+
+	withBackups := append([]string(nil), files...)
+	for _, file := range files {
+		withBackups = append(withBackups, file+".bak")
+	}
+	files = unionStrings(withBackups, []string{
+		filepath.Join(dir, configFileName),
+		filepath.Join(dir, localConfigFileName),
+		filepath.Join(dir, ".harnest") + string(filepath.Separator),
+		filepath.Join(dir, ".agents", "skills") + string(filepath.Separator),
+		filepath.Join(dir, "docs", "architecture") + string(filepath.Separator),
+		filepath.Join(dir, ".reports", "architecture-context") + string(filepath.Separator),
+	})
+	return updateIgnoreFile(filepath.Join(gitDir, "info", "exclude"), dir, files, localExcludeMarker)
+}
+
+func updateIgnoreFile(path, dir string, files []string, marker string) (bool, error) {
+	existing, err := readGitignoreEntries(path)
+	if err != nil {
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var missing []string
+	for _, file := range files {
+		isDir := strings.HasSuffix(file, string(filepath.Separator))
+		rel, err := filepath.Rel(dir, file)
+		if err != nil {
+			rel = file
+		}
+		rel = filepath.ToSlash(rel)
+		if isDir {
+			rel += "/"
+		}
+		if !existing[rel] {
+			missing = append(missing, rel)
+		}
+	}
+	if len(missing) == 0 {
+		return false, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	var b strings.Builder
+	b.WriteString("\n" + marker + "\n")
+	for _, entry := range missing {
+		b.WriteString(entry + "\n")
+	}
+	_, err = f.WriteString(b.String())
+	return err == nil, err
 }
 
 // resolveStacks returns the stack list to use for generation. The strategy is:

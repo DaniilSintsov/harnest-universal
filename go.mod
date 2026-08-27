@@ -1,4 +1,4 @@
-module github.com/AlexGladkov/harnest
+module github.com/daniilsintsov/harnest-universal
 
 go 1.25.0
 

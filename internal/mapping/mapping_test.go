@@ -3,7 +3,7 @@ package mapping
 import (
 	"testing"
 
-	"github.com/AlexGladkov/harnest/internal/detector"
+	"github.com/daniilsintsov/harnest-universal/internal/detector"
 )
 
 func TestMatchAgent_ExactSubstring(t *testing.T) {
@@ -61,11 +61,11 @@ func TestMatchWithFallback_ClaudeCodeFallback(t *testing.T) {
 	}
 }
 
-func TestMatchWithFallback_CursorNoFallback(t *testing.T) {
-	// No match → cursor gets empty
+func TestMatchWithFallback_NonClaudeUsesAuto(t *testing.T) {
+	// No match → harness selects a compatible agent at execution time.
 	got := matchWithFallback([]string{"unrelated-agent"}, []string{"nonexistent"}, "cursor")
-	if got != "" {
-		t.Errorf("expected empty, got %q", got)
+	if got != AutoAgent {
+		t.Errorf("expected %q, got %q", AutoAgent, got)
 	}
 }
 
@@ -74,6 +74,21 @@ func TestMatchWithFallback_MatchBeforeFallback(t *testing.T) {
 	got := matchWithFallback([]string{"my-rust-engineer"}, []string{"rust"}, "claude-code")
 	if got != "my-rust-engineer" {
 		t.Errorf("expected my-rust-engineer, got %q", got)
+	}
+}
+
+func TestResolveUsesAutoForUnavailableCodexRoles(t *testing.T) {
+	config := Resolve([]detector.Stack{{Name: "go", Lang: "go", Category: "backend", Path: "."}}, nil, "codex")
+	if len(config.Consilium) == 0 {
+		t.Fatal("consilium is empty")
+	}
+	for _, role := range config.Consilium {
+		if role.Agent != AutoAgent {
+			t.Fatalf("role %s agent = %q, want %q", role.Role, role.Agent, AutoAgent)
+		}
+	}
+	if len(config.Exec) != 1 || config.Exec[0].Agent != AutoAgent || config.Exec[0].Scope != "**/*.go" {
+		t.Fatalf("Codex exec fallback = %#v, want auto for **/*.go", config.Exec)
 	}
 }
 

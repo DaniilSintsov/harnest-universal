@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compliance Review"
+  short_description: "Review changes against active rules"
+  default_prompt: "Use $compliance-review to review changed files against active Harnest rules."
