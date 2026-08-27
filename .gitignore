@@ -5,3 +5,5 @@ dist/
 harnest-darwin-*
 harnest-linux-*
 .idea
+/bin/
+.codegraph/
