@@ -59,6 +59,7 @@ type WorkflowBlock struct {
 
 type AdapterSettings struct {
 	Models map[string]string `yaml:"models,omitempty"`
+	Agents *AgentsBlock      `yaml:"agents,omitempty"`
 }
 
 // AgentsBlock configures both consilium (advisory) and executing agents.

@@ -57,6 +57,61 @@ func TestGenerateMaterializesCallablePortableAgentForEverySelectedTarget(t *test
 	}
 }
 
+func TestAdapterAgentsKeepSharedModelTiers(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &HarnestConfig{
+		Version:   CurrentVersion,
+		Harnesses: []string{"codex"},
+		Agents: AgentsBlock{
+			Models: map[string]string{"architect": "low"},
+		},
+		Adapters: map[string]AdapterSettings{
+			"codex": {Agents: &AgentsBlock{Consilium: map[string]string{"architect": "codex-architect"}}},
+		},
+	}
+
+	project, err := BuildIR(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := ResolveTargetAgents(project, "codex")
+	if got := agents.Models["architect"]; got != "low" {
+		t.Fatalf("architect tier = %q, want low", got)
+	}
+}
+
+func TestAdapterExecutingOverridesSharedAgentByScope(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &HarnestConfig{
+		Version:   CurrentVersion,
+		Harnesses: []string{"codex"},
+		Agents: AgentsBlock{Executing: []ExecEntry{
+			{Agent: "shared-go", Scope: "**/*.go"},
+			{Agent: "shared-docs", Scope: "**/*.md"},
+		}},
+		Adapters: map[string]AdapterSettings{
+			"codex": {Agents: &AgentsBlock{Executing: []ExecEntry{
+				{Agent: "codex-go", Scope: "**/*.go"},
+			}}},
+		},
+	}
+
+	project, err := BuildIR(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executing := ResolveTargetAgents(project, "codex").Exec
+	if len(executing) != 2 {
+		t.Fatalf("executing = %#v, want two unique scopes", executing)
+	}
+	if executing[0].Agent != "shared-docs" || executing[0].Scope != "**/*.md" {
+		t.Fatalf("shared scope lost: %#v", executing)
+	}
+	if executing[1].Agent != "codex-go" || executing[1].Scope != "**/*.go" {
+		t.Fatalf("adapter override missing: %#v", executing)
+	}
+}
+
 func TestGenerateRejectsTargetsBeforeWriting(t *testing.T) {
 	for _, targets := range [][]string{nil, {"claude-code", "unknown"}, {"codex", "codex"}} {
 		dir := t.TempDir()

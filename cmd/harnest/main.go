@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -145,31 +146,12 @@ func runInit() {
 	}
 
 	targets := resolveInstallTargets(harnessName)
-
-	discovered := agents_pkg.DiscoverPortable(dir)
-	resolutionTarget := "codex"
-	if len(targets) == 1 {
-		resolutionTarget = targets[0]
-		discovered = agents_pkg.DiscoverForTarget(dir, resolutionTarget)
+	agentsCfg, adapterAgents, err := resolveInitAgents(dir, stacks, targets, !hasFlag("--non-interactive"), bufio.NewReader(os.Stdin))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: interactive onboarding: %v\n", err)
+		os.Exit(1)
 	}
-	var agentsCfg mapping.AgentConfig
-	if hasFlag("--non-interactive") {
-		agentsCfg = mapping.Resolve(stacks, discovered, resolutionTarget)
-	} else {
-		var err error
-		agentsCfg, err = wizard.Run(
-			os.Stdin,
-			os.Stdout,
-			mapping.ResolveStructure(stacks),
-			mapping.GetSuggestions(stacks, discovered, resolutionTarget),
-			discovered,
-		)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: interactive onboarding: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	cfg := newProjectConfig(dir, stacks, agentsCfg, targets)
+	cfg := newProjectConfig(dir, stacks, agentsCfg, adapterAgents, targets)
 	if err := harnestYaml.Save(dir, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error saving harnest.yaml: %v\n", err)
 		os.Exit(1)
@@ -188,11 +170,171 @@ func runInit() {
 	for _, file := range files {
 		fmt.Println("  " + file)
 	}
-	fmt.Printf("  Assigned consilium roles: %d\n", len(cfg.Agents.Consilium))
-	fmt.Printf("  Assigned exec agents: %d\n", len(cfg.Agents.Executing))
+	if len(adapterAgents) > 0 {
+		fmt.Printf("  Configured target agent registries: %d\n", len(targets))
+	} else {
+		fmt.Printf("  Assigned consilium roles: %d\n", len(cfg.Agents.Consilium))
+		fmt.Printf("  Assigned exec agents: %d\n", len(cfg.Agents.Executing))
+	}
 }
 
-func newProjectConfig(dir string, stacks []detector.Stack, agentsCfg mapping.AgentConfig, targets []string) *harnestYaml.HarnestConfig {
+func resolveInitAgents(dir string, stacks []detector.Stack, targets []string, interactive bool, input *bufio.Reader) (mapping.AgentConfig, map[string]mapping.AgentConfig, error) {
+	if len(targets) == 1 {
+		cfg, err := resolveInitAgentsForTarget(dir, stacks, targets[0], interactive, input)
+		return cfg, nil, err
+	}
+
+	perTarget := make(map[string]mapping.AgentConfig, len(targets))
+	for _, target := range targets {
+		cfg, err := resolveInitAgentsForTarget(dir, stacks, target, interactive, input)
+		if err != nil {
+			return mapping.AgentConfig{}, nil, err
+		}
+		perTarget[target] = cfg
+	}
+
+	shared := intersectAgentConfigs(perTarget, targets)
+	adapterAgents := make(map[string]mapping.AgentConfig, len(targets))
+	for _, target := range targets {
+		delta := subtractAgentConfig(perTarget[target], shared)
+		if !isEmptyAgentConfig(delta) {
+			adapterAgents[target] = delta
+		}
+	}
+
+	return shared, adapterAgents, nil
+}
+
+func resolveInitAgentsForTarget(dir string, stacks []detector.Stack, target string, interactive bool, input *bufio.Reader) (mapping.AgentConfig, error) {
+	discovered := agents_pkg.DiscoverForTarget(dir, target)
+	if !interactive {
+		return mapping.Resolve(stacks, discovered, target), nil
+	}
+	fmt.Printf("\n── Agent Wizard: %s ──\n", target)
+	return wizard.Run(
+		input,
+		os.Stdout,
+		mapping.ResolveStructure(stacks),
+		mapping.GetSuggestions(stacks, discovered, target),
+		discovered,
+	)
+}
+
+func intersectAgentConfigs(configs map[string]mapping.AgentConfig, targets []string) mapping.AgentConfig {
+	if len(targets) == 0 {
+		return mapping.AgentConfig{}
+	}
+	base := configs[targets[0]]
+	result := mapping.AgentConfig{}
+
+	roleValues := make(map[string]string, len(base.Consilium))
+	for _, role := range base.Consilium {
+		roleValues[role.Role] = role.Agent
+	}
+	for _, role := range base.Consilium {
+		shared := roleValues[role.Role]
+		if shared == "" {
+			continue
+		}
+		for _, target := range targets[1:] {
+			if current := consiliumAgentForRole(configs[target], role.Role); current != shared {
+				shared = ""
+				break
+			}
+		}
+		if shared != "" {
+			result.Consilium = append(result.Consilium, mapping.ConsiliumRole{Role: role.Role, Agent: shared})
+		}
+	}
+
+	for _, execAgent := range base.Exec {
+		shared := true
+		for _, target := range targets[1:] {
+			if !hasExecAgent(configs[target], execAgent) {
+				shared = false
+				break
+			}
+		}
+		if shared {
+			result.Exec = append(result.Exec, execAgent)
+		}
+	}
+
+	result.Models = make(map[string]string, len(base.Models))
+	for role, tier := range base.Models {
+		shared := tier
+		for _, target := range targets[1:] {
+			if configs[target].Models[role] != tier {
+				shared = ""
+				break
+			}
+		}
+		if shared != "" {
+			result.Models[role] = shared
+		}
+	}
+	if len(result.Models) == 0 {
+		result.Models = nil
+	}
+
+	return result
+}
+
+func subtractAgentConfig(full, shared mapping.AgentConfig) mapping.AgentConfig {
+	result := mapping.AgentConfig{
+		Models: map[string]string{},
+	}
+	sharedRoles := make(map[string]string, len(shared.Consilium))
+	for _, role := range shared.Consilium {
+		sharedRoles[role.Role] = role.Agent
+	}
+	for _, role := range full.Consilium {
+		if sharedRoles[role.Role] != role.Agent {
+			result.Consilium = append(result.Consilium, role)
+		}
+	}
+
+	for _, execAgent := range full.Exec {
+		if !hasExecAgent(shared, execAgent) {
+			result.Exec = append(result.Exec, execAgent)
+		}
+	}
+
+	for role, tier := range full.Models {
+		if shared.Models[role] != tier {
+			result.Models[role] = tier
+		}
+	}
+	if len(result.Models) == 0 {
+		result.Models = nil
+	}
+
+	return result
+}
+
+func consiliumAgentForRole(cfg mapping.AgentConfig, roleName string) string {
+	for _, role := range cfg.Consilium {
+		if role.Role == roleName {
+			return role.Agent
+		}
+	}
+	return ""
+}
+
+func hasExecAgent(cfg mapping.AgentConfig, want mapping.ExecAgent) bool {
+	for _, execAgent := range cfg.Exec {
+		if execAgent == want {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmptyAgentConfig(cfg mapping.AgentConfig) bool {
+	return len(cfg.Consilium) == 0 && len(cfg.Exec) == 0 && len(cfg.Models) == 0
+}
+
+func newProjectConfig(dir string, stacks []detector.Stack, agentsCfg mapping.AgentConfig, adapterAgents map[string]mapping.AgentConfig, targets []string) *harnestYaml.HarnestConfig {
 	cfg := &harnestYaml.HarnestConfig{
 		Version:   harnestYaml.CurrentVersion,
 		Project:   harnestYaml.ProjectInfo{Name: filepath.Base(dir)},
@@ -226,6 +368,17 @@ func newProjectConfig(dir string, stacks []detector.Stack, agentsCfg mapping.Age
 	}
 	for role, tier := range agentsCfg.Models {
 		cfg.Agents.Models[role] = tier
+	}
+	if len(adapterAgents) > 0 {
+		cfg.Adapters = make(map[string]harnestYaml.AdapterSettings, len(adapterAgents))
+		for _, target := range targets {
+			agentsCfg, ok := adapterAgents[target]
+			if !ok {
+				continue
+			}
+			block := harnestYaml.AgentBlockFromConfig(agentsCfg)
+			cfg.Adapters[target] = harnestYaml.AdapterSettings{Agents: &block}
+		}
 	}
 	return cfg
 }
@@ -365,7 +518,7 @@ func resolveProfilesBaseDir(target string) (string, error) {
 
 func runAgents() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: harnest agents <list|set|set-model> [role] [agent|tier]")
+		fmt.Fprintln(os.Stderr, "usage: harnest agents <list|set|set-model> [role] [agent|tier] [--harness <target>]")
 		os.Exit(1)
 	}
 
@@ -384,7 +537,14 @@ func runAgents() {
 				os.Exit(1)
 			}
 			fmt.Println("Project agent config:")
-			printAgentConfig(project.Agents)
+			if len(project.Targets) == 0 {
+				printAgentConfig(project.Agents)
+				return
+			}
+			for _, target := range project.Targets {
+				fmt.Printf("\n[%s]", target)
+				printAgentConfig(harnestYaml.ResolveTargetAgents(project, target))
+			}
 			return
 		}
 		cfg, err := config.ReadProject(dir)
@@ -415,11 +575,16 @@ func runAgents() {
 
 	case "set":
 		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "usage: harnest agents set <role> <agent>")
+			fmt.Fprintln(os.Stderr, "usage: harnest agents set <role> <agent> [--harness <target>]")
 			os.Exit(1)
 		}
 		role := os.Args[3]
 		agent := os.Args[4]
+		target := parseFlag("--harness", "")
+		if hasFlag("--harness") && target == "" {
+			fmt.Fprintln(os.Stderr, "error: --harness requires a target")
+			os.Exit(1)
+		}
 		dir, _ := os.Getwd()
 		// Optional --dir flag
 		if d := parseFlag("--dir", ""); d != "" {
@@ -436,16 +601,29 @@ func runAgents() {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
-			if cfg.Agents.Consilium == nil {
-				cfg.Agents.Consilium = map[string]string{}
+			block, err := agentBlockForUpdate(cfg, target, role, false)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
 			}
-			cfg.Agents.Consilium[role] = agent
+			if block.Consilium == nil {
+				block.Consilium = map[string]string{}
+			}
+			block.Consilium[role] = agent
 			if err := saveAndGenerate(dir, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Set %s → %s\n", role, agent)
+			if target != "" {
+				fmt.Printf("Set %s → %s for %s\n", role, agent, target)
+			} else {
+				fmt.Printf("Set %s → %s\n", role, agent)
+			}
 			return
+		}
+		if target != "" {
+			fmt.Fprintln(os.Stderr, "error: --harness requires harnest.yaml; run 'harnest init' or 'harnest migrate'")
+			os.Exit(1)
 		}
 		err := config.SetAgent(dir, role, agent)
 		if err != nil {
@@ -456,12 +634,17 @@ func runAgents() {
 
 	case "set-model":
 		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "usage: harnest agents set-model <role> <tier>")
+			fmt.Fprintln(os.Stderr, "usage: harnest agents set-model <role> <tier> [--harness <target>]")
 			fmt.Fprintln(os.Stderr, "  tier: high, medium, low")
 			os.Exit(1)
 		}
 		role := os.Args[3]
 		tier := os.Args[4]
+		target := parseFlag("--harness", "")
+		if hasFlag("--harness") && target == "" {
+			fmt.Fprintln(os.Stderr, "error: --harness requires a target")
+			os.Exit(1)
+		}
 		dir, _ := os.Getwd()
 		if d := parseFlag("--dir", ""); d != "" {
 			dir = d
@@ -481,16 +664,29 @@ func runAgents() {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
-			if cfg.Agents.Models == nil {
-				cfg.Agents.Models = map[string]string{}
+			block, err := agentBlockForUpdate(cfg, target, role, true)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
 			}
-			cfg.Agents.Models[role] = tier
+			if block.Models == nil {
+				block.Models = map[string]string{}
+			}
+			block.Models[role] = tier
 			if err := saveAndGenerate(dir, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Set model for %s → %s\n", role, tier)
+			if target != "" {
+				fmt.Printf("Set model for %s → %s for %s\n", role, tier, target)
+			} else {
+				fmt.Printf("Set model for %s → %s\n", role, tier)
+			}
 			return
+		}
+		if target != "" {
+			fmt.Fprintln(os.Stderr, "error: --harness requires harnest.yaml; run 'harnest init' or 'harnest migrate'")
+			os.Exit(1)
 		}
 		err := config.SetModel(dir, role, tier)
 		if err != nil {
@@ -503,6 +699,49 @@ func runAgents() {
 		fmt.Fprintf(os.Stderr, "unknown agents subcommand: %s\n", os.Args[2])
 		os.Exit(1)
 	}
+}
+
+func agentBlockForUpdate(cfg *harnestYaml.HarnestConfig, target, role string, model bool) (*harnestYaml.AgentsBlock, error) {
+	if target == "" {
+		var conflicts []string
+		for _, harnessName := range cfg.Harnesses {
+			adapter := cfg.Adapters[harnessName]
+			if adapter.Agents == nil {
+				continue
+			}
+			_, overridden := adapter.Agents.Consilium[role]
+			if model {
+				_, overridden = adapter.Agents.Models[role]
+			}
+			if overridden {
+				conflicts = append(conflicts, harnessName)
+			}
+		}
+		if len(conflicts) > 0 {
+			kind := "agent"
+			if model {
+				kind = "model tier"
+			}
+			return nil, fmt.Errorf("%s for role %q has target-specific overrides for %s; use --harness <target>", kind, role, strings.Join(conflicts, ", "))
+		}
+		return &cfg.Agents, nil
+	}
+
+	if _, err := harness.Get(target); err != nil {
+		return nil, err
+	}
+	if !slices.Contains(cfg.Harnesses, target) {
+		return nil, fmt.Errorf("harness %q is not configured; configured harnesses: %s", target, strings.Join(cfg.Harnesses, ", "))
+	}
+	if cfg.Adapters == nil {
+		cfg.Adapters = map[string]harnestYaml.AdapterSettings{}
+	}
+	adapter := cfg.Adapters[target]
+	if adapter.Agents == nil {
+		adapter.Agents = &harnestYaml.AgentsBlock{}
+	}
+	cfg.Adapters[target] = adapter
+	return adapter.Agents, nil
 }
 
 func saveAndGenerate(dir string, cfg *harnestYaml.HarnestConfig) error {
@@ -1201,8 +1440,8 @@ Usage:
   harnest profiles remove <name> [--harness <target>]
   harnest profiles sync <name> --from claude-code|codex
   harnest agents list [dir]
-  harnest agents set <role> <agent>
-  harnest agents set-model <role> <tier>
+  harnest agents set <role> <agent> [--harness <target>]
+  harnest agents set-model <role> <tier> [--harness <target>]
   harnest drift [dir] [--json] [--ci] [--fail-on error|warning] [--fix]
   harnest generate [dir] [--dry-run]
   harnest migrate [dir]

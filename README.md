@@ -129,6 +129,15 @@ agents:
     architect: auto
     security: auto
   executing: []
+adapters:
+  claude-code:
+    agents:
+      consilium:
+        architect: claude-architect
+  codex:
+    agents:
+      consilium:
+        architect: codex-architect
 harnesses: [claude-code, codex]
 settings:
   local_default: true
@@ -136,6 +145,10 @@ settings:
 ```
 
 Legacy `version: 1` читается. `harnest migrate` создаёт `harnest.yaml.v1.bak` и атомарно записывает v2.
+
+`agents` хранит общие назначения. `adapters.<target>.agents` переопределяет их для Claude Code или Codex. Обычный `harnest init` разрешает каждый реестр отдельно; `--harness` сохраняет прежнюю single-target схему.
+
+`harnest agents set` и `set-model` принимают `--harness claude-code|codex` для изменения конкретного реестра. Без target команда отклоняет роль, уже переопределённую adapter-ом, вместо скрытого no-op.
 
 Поля `design_system`, `profiles`, `settings.lock_file` и `adapters.<name>.models` пока не реализованы. Вместо тихого no-op генерация возвращает явную ошибку с заменяющей командой или полем.
 
@@ -173,6 +186,8 @@ harnest doctor [dir]
 harnest verify --changed [dir] [--base <ref>] [--allow <rule-id>]
 harnest profiles list|add|edit|remove [name] [--harness claude-code|codex]
 harnest profiles sync <name> --from claude-code|codex
+harnest agents set <role> <agent> [--harness claude-code|codex]
+harnest agents set-model <role> <tier> [--harness claude-code|codex]
 harnest learn [dir] --id <id> --statement <text>
 harnest detect [dir]
 harnest drift [dir] # legacy schema v1 only

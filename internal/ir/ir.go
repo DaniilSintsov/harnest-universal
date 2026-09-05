@@ -49,6 +49,7 @@ const (
 
 type AdapterSettings struct {
 	Models map[string]string
+	Agents mapping.AgentConfig
 }
 
 type Support string
