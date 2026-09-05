@@ -11,7 +11,9 @@ import (
 	"github.com/daniilsintsov/harnest-universal/internal/agents"
 	"github.com/daniilsintsov/harnest-universal/internal/detector"
 	"github.com/daniilsintsov/harnest-universal/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/ir"
 	"github.com/daniilsintsov/harnest-universal/internal/managedfile"
+	"github.com/daniilsintsov/harnest-universal/internal/mapping"
 	projectSkills "github.com/daniilsintsov/harnest-universal/internal/skills"
 )
 
@@ -67,7 +69,9 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 	for _, harnessName := range project.Targets {
 		gen, _ := harness.Get(harnessName)
 
-		outPath, err := gen.Generate(dir, project)
+		targetProject := project
+		targetProject.Agents = ResolveTargetAgents(project, harnessName)
+		outPath, err := gen.Generate(dir, targetProject)
 		if err != nil {
 			return generated, fmt.Errorf("generating %q: %w", harnessName, err)
 		}
@@ -131,7 +135,9 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (DryRunResult, error) {
 	for _, harnessName := range project.Targets {
 		gen, _ := harness.Get(harnessName)
 
-		outPath, err := gen.Generate(tmpDir, project)
+		targetProject := project
+		targetProject.Agents = ResolveTargetAgents(project, harnessName)
+		outPath, err := gen.Generate(tmpDir, targetProject)
 		if err != nil {
 			return results, fmt.Errorf("dry-run generating %q: %w", harnessName, err)
 		}
@@ -146,6 +152,80 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (DryRunResult, error) {
 	}
 	sort.Strings(results.Files)
 	return results, nil
+}
+
+// ResolveTargetAgents applies one adapter's overrides to the shared agent config.
+func ResolveTargetAgents(project ir.Project, target string) mapping.AgentConfig {
+	adapter, ok := project.Adapters[target]
+	if !ok {
+		return project.Agents
+	}
+	return mergeAgentConfigs(project.Agents, adapter.Agents)
+}
+
+func mergeAgentConfigs(base, overlay mapping.AgentConfig) mapping.AgentConfig {
+	if len(overlay.Consilium) == 0 && len(overlay.Exec) == 0 && len(overlay.Models) == 0 {
+		return base
+	}
+
+	result := mapping.AgentConfig{
+		Models: mergeStringMap(base.Models, overlay.Models),
+	}
+
+	roleAgents := map[string]string{}
+	var roleOrder []string
+	addRole := func(role, agent string) {
+		if _, ok := roleAgents[role]; !ok {
+			roleOrder = append(roleOrder, role)
+		}
+		roleAgents[role] = agent
+	}
+	for _, role := range base.Consilium {
+		addRole(role.Role, role.Agent)
+	}
+	for _, role := range overlay.Consilium {
+		addRole(role.Role, role.Agent)
+	}
+	for _, role := range roleOrder {
+		if agent := roleAgents[role]; agent != "" {
+			result.Consilium = append(result.Consilium, mapping.ConsiliumRole{Role: role, Agent: agent})
+		}
+	}
+
+	overriddenScopes := make(map[string]bool, len(overlay.Exec))
+	for _, execAgent := range overlay.Exec {
+		overriddenScopes[execAgent.Scope] = true
+	}
+	for _, execAgent := range base.Exec {
+		if !overriddenScopes[execAgent.Scope] {
+			result.Exec = append(result.Exec, execAgent)
+		}
+	}
+	overlayIndex := map[string]int{}
+	for _, execAgent := range overlay.Exec {
+		if index, ok := overlayIndex[execAgent.Scope]; ok {
+			result.Exec[index] = execAgent
+		} else {
+			overlayIndex[execAgent.Scope] = len(result.Exec)
+			result.Exec = append(result.Exec, execAgent)
+		}
+	}
+
+	return result
+}
+
+func mergeStringMap(base, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(base)+len(overlay))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, value := range overlay {
+		result[key] = value
+	}
+	return result
 }
 
 func validateTargets(targets []string) error {

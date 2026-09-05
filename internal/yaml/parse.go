@@ -79,13 +79,18 @@ func Exists(dir string) bool {
 // ToAgentConfig converts a HarnestConfig into a mapping.AgentConfig that can
 // be passed directly to harness generators.
 func (cfg *HarnestConfig) ToAgentConfig() mapping.AgentConfig {
+	return cfg.Agents.ToAgentConfig()
+}
+
+// ToAgentConfig converts an AgentsBlock into a mapping.AgentConfig.
+func (block AgentsBlock) ToAgentConfig() mapping.AgentConfig {
 	ac := mapping.AgentConfig{
 		Models: make(map[string]string),
 	}
 
 	// Consilium: preserve declaration order by iterating the map in a stable way.
 	// We build a slice from the map so generators receive a deterministic list.
-	for role, agent := range cfg.Agents.Consilium {
+	for role, agent := range block.Consilium {
 		ac.Consilium = append(ac.Consilium, mapping.ConsiliumRole{
 			Role:  role,
 			Agent: agent,
@@ -93,7 +98,7 @@ func (cfg *HarnestConfig) ToAgentConfig() mapping.AgentConfig {
 	}
 
 	// Executing agents.
-	for _, e := range cfg.Agents.Executing {
+	for _, e := range block.Executing {
 		ac.Exec = append(ac.Exec, mapping.ExecAgent{
 			Agent: e.Agent,
 			Scope: e.Scope,
@@ -105,9 +110,42 @@ func (cfg *HarnestConfig) ToAgentConfig() mapping.AgentConfig {
 	for role, tier := range defaults {
 		ac.Models[role] = tier
 	}
-	for role, tier := range cfg.Agents.Models {
+	for role, tier := range block.Models {
 		ac.Models[role] = tier
 	}
 
 	return ac
+}
+
+// AgentBlockFromConfig converts a mapping.AgentConfig into an AgentsBlock.
+func AgentBlockFromConfig(cfg mapping.AgentConfig) AgentsBlock {
+	block := AgentsBlock{
+		Consilium: map[string]string{},
+		Models:    map[string]string{},
+	}
+	for _, role := range cfg.Consilium {
+		if role.Agent != "" {
+			block.Consilium[role.Role] = role.Agent
+		}
+	}
+	for _, agent := range cfg.Exec {
+		if agent.Agent != "" {
+			block.Executing = append(block.Executing, ExecEntry{
+				Agent: agent.Agent,
+				Scope: agent.Scope,
+			})
+		}
+	}
+	for role, tier := range cfg.Models {
+		if tier != "" {
+			block.Models[role] = tier
+		}
+	}
+	if len(block.Consilium) == 0 {
+		block.Consilium = nil
+	}
+	if len(block.Models) == 0 {
+		block.Models = nil
+	}
+	return block
 }

@@ -131,7 +131,12 @@ func BuildIR(dir string, cfg *HarnestConfig) (ir.Project, error) {
 		Adapters: make(map[string]ir.AdapterSettings, len(upgraded.Adapters)),
 	}
 	for name, settings := range upgraded.Adapters {
-		project.Adapters[name] = ir.AdapterSettings{Models: settings.Models}
+		adapter := ir.AdapterSettings{Models: settings.Models}
+		if settings.Agents != nil {
+			adapter.Agents = settings.Agents.ToAgentConfig()
+			adapter.Agents.Models = settings.Agents.Models
+		}
+		project.Adapters[name] = adapter
 	}
 	project.PolicyRules, err = rules.Load(dir, upgraded.Rules.Root)
 	if err != nil {
