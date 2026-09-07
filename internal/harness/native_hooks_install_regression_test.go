@@ -19,6 +19,7 @@ func installFile(t *testing.T, path, content string) {
 }
 
 func TestPlanHooksRejectsDeletedTrackedConfig(t *testing.T) {
+	requireNativeHookInstallation(t)
 	for _, path := range []string{".codex/hooks.json", ".claude/settings.local.json"} {
 		t.Run(path, func(t *testing.T) {
 			dir := t.TempDir()
@@ -37,6 +38,7 @@ func TestPlanHooksRejectsDeletedTrackedConfig(t *testing.T) {
 }
 
 func TestPlanHooksRejectsIneffectiveIgnore(t *testing.T) {
+	requireNativeHookInstallation(t)
 	for _, tc := range []struct{ name, path, content string }{
 		{"config", ".codex/.gitignore", "!hooks.json\n"},
 		{"state", ".harnest/.gitignore", "!state/\n"},
@@ -66,6 +68,7 @@ func TestPlanHooksRejectsIneffectiveIgnore(t *testing.T) {
 }
 
 func TestPlanHooksChecksProspectiveExcludeAndRepoCaseSetting(t *testing.T) {
+	requireNativeHookInstallation(t)
 	for _, ignoreCase := range []string{"true", "false"} {
 		t.Run(ignoreCase, func(t *testing.T) {
 			dir := t.TempDir()
@@ -115,7 +118,7 @@ func TestPlanHooksEmptySelectionHandlesSymlinks(t *testing.T) {
 				}
 				content := []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign"}]}]}}`)
 				if owned {
-					content, err = json.Marshal(map[string]any{"hooks": map[string]any{"Stop": []any{nativeEntry("codex", "Stop", root, "/usr/local/bin/harnest")}}})
+					content, err = json.Marshal(map[string]any{"hooks": map[string]any{"Stop": []any{nativeEntry("codex", "Stop", root, filepath.Join(root, "harnest"), "")}}})
 					if err != nil {
 						t.Fatal(err)
 					}

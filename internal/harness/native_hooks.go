@@ -55,6 +55,7 @@ func InspectHooks(dir string, project ir.Project) ([]HookDiagnostic, error) {
 		return nil, err
 	}
 	wantPre, wantStop := hookEvents(selected)
+	checksDigest, checksErr := selectedChecksDigest(root, project, selected)
 	result := make([]HookDiagnostic, 0, len(platforms))
 	for _, platform := range platforms {
 		path := filepath.Join(root, ".codex", "hooks.json")
@@ -62,6 +63,9 @@ func InspectHooks(dir string, project ir.Project) ([]HookDiagnostic, error) {
 			path = filepath.Join(claudeSettingsRoot(root), ".claude", "settings.local.json")
 		}
 		diagnostic := HookDiagnostic{Platform: platform, Path: path}
+		if checksErr != nil {
+			diagnostic.Issue = checksErr.Error()
+		}
 		data, readErr := os.ReadFile(path)
 		if os.IsNotExist(readErr) {
 			result = append(result, diagnostic)
@@ -125,7 +129,15 @@ func InspectHooks(dir string, project ir.Project) ([]HookDiagnostic, error) {
 					if !validHookTimeout(handler["timeout"]) {
 						diagnostic.Issue = "owned handler timeout must be at least 120 seconds"
 					}
-					_, executable, _ := hookCommand(handler, platform)
+					args, executable, _ := hookCommand(handler, platform)
+					flags, _ := parseFlags(args)
+					expectedDigest := ""
+					if event == "Stop" {
+						expectedDigest = checksDigest
+					}
+					if flags["checks-digest"] != expectedDigest {
+						diagnostic.Issue = "owned handler has missing or stale check approval digest; sync hooks and review the changed checks"
+					}
 					if diagnostic.Executable != "" && diagnostic.Executable != executable {
 						diagnostic.Issue = "owned handlers use different executables"
 					}
@@ -193,10 +205,9 @@ func PlanHooks(dir string, project ir.Project, executable string) ([]HookArtifac
 		return nil, err
 	}
 	active := len(selected) > 0
-	if active {
-		if err := validateSelectedChecks(root, project, selected); err != nil {
-			return nil, err
-		}
+	checksDigest, err := selectedChecksDigest(root, project, selected)
+	if err != nil {
+		return nil, err
 	}
 	if active && runtime.GOOS == "windows" {
 		return nil, fmt.Errorf("native hook installation is not verified on Windows")
@@ -216,7 +227,7 @@ func PlanHooks(dir string, project ir.Project, executable string) ([]HookArtifac
 			}
 			continue
 		}
-		artifact, changed, err := planPlatformHooks(root, project, executable, target, active && (pre || stop), pre, stop)
+		artifact, changed, err := planPlatformHooks(root, project, executable, target, checksDigest, active && (pre || stop), pre, stop)
 		if err != nil {
 			return nil, fmt.Errorf("planning %s hooks: %w", target, err)
 		}
@@ -234,8 +245,9 @@ func PlanHooks(dir string, project ir.Project, executable string) ([]HookArtifac
 	return artifacts, nil
 }
 
-func validateSelectedChecks(root string, project ir.Project, selected []rules.Rule) error {
+func selectedChecksDigest(root string, project ir.Project, selected []rules.Rule) (string, error) {
 	seen := map[string]bool{}
+	var definitions []checks.Check
 	for _, rule := range selected {
 		for _, enforcement := range rule.Enforcement {
 			if enforcement.Type != "require-check" || seen[enforcement.Check] {
@@ -243,15 +255,16 @@ func validateSelectedChecks(root string, project ir.Project, selected []rules.Ru
 			}
 			check, err := checks.Load(root, project.Checks.Root, enforcement.Check)
 			if err != nil {
-				return fmt.Errorf("hook rule %q: %w", rule.ID, err)
+				return "", fmt.Errorf("hook rule %q: %w", rule.ID, err)
 			}
 			if !check.Approved {
-				return fmt.Errorf("hook rule %q uses unapproved check %q", rule.ID, check.ID)
+				return "", fmt.Errorf("hook rule %q uses unapproved check %q", rule.ID, check.ID)
 			}
+			definitions = append(definitions, check)
 			seen[enforcement.Check] = true
 		}
 	}
-	return nil
+	return checks.Digest(root, definitions)
 }
 
 const nativeIgnoreMarker = "# Harnest native hooks"
@@ -440,7 +453,7 @@ func hookEvents(selected []rules.Rule) (pre, stop bool) {
 	return pre, stop
 }
 
-func planPlatformHooks(root string, project ir.Project, executable, platform string, active, pre, stop bool) (HookArtifact, bool, error) {
+func planPlatformHooks(root string, project ir.Project, executable, platform, checksDigest string, active, pre, stop bool) (HookArtifact, bool, error) {
 	configRoot := root
 	path := filepath.Join(root, ".codex", "hooks.json")
 	if platform == "claude-code" {
@@ -487,7 +500,7 @@ func planPlatformHooks(root string, project ir.Project, executable, platform str
 	if doc == nil {
 		doc = map[string]any{}
 	}
-	changed, err := mergeNativeHooks(doc, platform, root, executable, active, pre, stop)
+	changed, err := mergeNativeHooks(doc, platform, root, executable, checksDigest, active, pre, stop)
 	if err != nil {
 		return HookArtifact{}, false, err
 	}
@@ -545,7 +558,7 @@ func validateLocalConfigPath(root, path string) error {
 	return nil
 }
 
-func mergeNativeHooks(doc map[string]any, platform, root, executable string, active, pre, stop bool) (bool, error) {
+func mergeNativeHooks(doc map[string]any, platform, root, executable, checksDigest string, active, pre, stop bool) (bool, error) {
 	original, _ := json.Marshal(doc)
 	hooks, ok := doc["hooks"].(map[string]any)
 	if !ok {
@@ -594,7 +607,7 @@ func mergeNativeHooks(doc map[string]any, platform, root, executable string, act
 		}
 		want := active && ((event == "PreToolUse" && pre) || (event == "Stop" && stop))
 		if want {
-			kept = append(kept, nativeEntry(platform, event, root, executable))
+			kept = append(kept, nativeEntry(platform, event, root, executable, checksDigest))
 		}
 		if len(kept) == 0 {
 			delete(hooks, event)
@@ -611,7 +624,7 @@ func mergeNativeHooks(doc map[string]any, platform, root, executable string, act
 	return !bytes.Equal(original, updated), nil
 }
 
-func nativeEntry(platform, event, root, executable string) map[string]any {
+func nativeEntry(platform, event, root, executable, checksDigest string) map[string]any {
 	eventArg := "stop"
 	matcher := ""
 	if event == "PreToolUse" {
@@ -623,21 +636,15 @@ func nativeEntry(platform, event, root, executable string) map[string]any {
 		}
 	}
 	args := []string{"hook", "evaluate", "--platform", platform, "--event", eventArg, "--project", root}
-	handler := map[string]any{"type": "command", "timeout": 120, "statusMessage": nativeHookStatus}
-	if platform == "claude-code" {
-		handler["command"] = executable
-		values := make([]any, len(args))
-		for i := range args {
-			values[i] = args[i]
-		}
-		handler["args"] = values
-	} else {
-		parts := append([]string{executable}, args...)
-		for i := range parts {
-			parts[i] = shellQuote(parts[i])
-		}
-		handler["command"] = strings.Join(parts, " ")
+	if event == "Stop" && checksDigest != "" {
+		args = append(args, "--checks-digest", checksDigest)
 	}
+	handler := map[string]any{"type": "command", "timeout": 120, "statusMessage": nativeHookStatus}
+	parts := append([]string{executable}, args...)
+	for i := range parts {
+		parts[i] = shellQuote(parts[i])
+	}
+	handler["command"] = strings.Join(parts, " ")
 	entry := map[string]any{"hooks": []any{handler}}
 	if matcher != "" {
 		entry["matcher"] = matcher
@@ -668,7 +675,8 @@ func ownedHandler(handler map[string]any, platform, event string) (bool, string,
 }
 
 func hookCommand(handler map[string]any, platform string) ([]string, string, bool) {
-	if platform == "claude-code" {
+	// Recognize older generated Claude entries so sync can migrate them.
+	if platform == "claude-code" && handler["args"] != nil {
 		command, ok := handler["command"].(string)
 		if !ok || command == "" {
 			return nil, "", false
@@ -699,17 +707,20 @@ func hookCommand(handler map[string]any, platform string) ([]string, string, boo
 
 func parseFlags(args []string) (map[string]string, bool) {
 	result := map[string]string{}
-	if len(args) != 6 {
+	if len(args) != 6 && len(args) != 8 {
 		return nil, false
 	}
 	for i := 0; i+1 < len(args); i += 2 {
 		key := strings.TrimPrefix(args[i], "--")
-		if args[i] == key || (key != "platform" && key != "event" && key != "project") || result[key] != "" || args[i+1] == "" {
+		if args[i] == key || (key != "platform" && key != "event" && key != "project" && key != "checks-digest") || result[key] != "" || args[i+1] == "" {
+			return nil, false
+		}
+		if key == "checks-digest" && (len(args[i+1]) != 64 || strings.Trim(args[i+1], "0123456789abcdef") != "") {
 			return nil, false
 		}
 		result[key] = args[i+1]
 	}
-	return result, len(result) == 3
+	return result, result["platform"] != "" && result["event"] != "" && result["project"] != ""
 }
 
 func objectSlice(value any) ([]map[string]any, error) {

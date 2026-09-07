@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/daniilsintsov/harnest-universal/internal/checks"
 )
 
 func TestEvaluatePreToolUseContracts(t *testing.T) {
@@ -58,6 +61,12 @@ func TestInvalidBindingStillDeniesActualPreToolUse(t *testing.T) {
 		if result.Status != "evaluation-error" || !ok || output["permissionDecision"] != "deny" {
 			t.Fatalf("invalid binding %q failed open: %#v", event, result)
 		}
+		if runtime.GOOS == "windows" && !strings.Contains(result.Output["systemMessage"].(string), "history could not be written") {
+			t.Fatalf("unsupported log writer was not reported: %#v", result.Output)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		return // The Windows log writer deliberately rejects native hook history.
 	}
 	log, err := os.ReadFile(filepath.Join(root, ".harnest", "state", "hooks.jsonl"))
 	if err != nil || !strings.Contains(string(log), `"event":"pre-tool-use"`) || strings.Contains(string(log), `"event":"stop"`) {
@@ -178,12 +187,13 @@ enforcement:
     check: shared
 `
 	root := hookFixture(t, []string{"first", "second"}, check, rules)
+	options := approvedStopOptions(t, root)
 	initGit(t, root)
 	if err := os.WriteFile(filepath.Join(root, "changed.go"), []byte("package changed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	payload := fmt.Sprintf(`{"hook_event_name":"Stop","cwd":%q,"stop_hook_active":false}`, root)
-	got := Evaluate(context.Background(), Options{Platform: "codex", Event: "stop", Project: root}, strings.NewReader(payload))
+	got := Evaluate(context.Background(), options, strings.NewReader(payload))
 	if got.Status != "passed" || len(got.Records) != 1 || len(got.Records[0].RuleIDs) != 2 {
 		t.Fatalf("dedup result = %#v", got)
 	}
@@ -197,7 +207,7 @@ enforcement:
 		t.Fatal(err)
 	}
 	payload = fmt.Sprintf(`{"hook_event_name":"Stop","cwd":%q,"stop_hook_active":true}`, root)
-	got = Evaluate(context.Background(), Options{Platform: "codex", Event: "stop", Project: root}, strings.NewReader(payload))
+	got = Evaluate(context.Background(), approvedStopOptions(t, root), strings.NewReader(payload))
 	if got.Status != "violation" || got.Output["decision"] != nil {
 		t.Fatalf("repeated failure = %#v", got)
 	}
@@ -248,10 +258,26 @@ enforcement:
 		t.Fatal(err)
 	}
 	payload := fmt.Sprintf(`{"hook_event_name":"Stop","cwd":%q,"stop_hook_active":false}`, root)
-	got := Evaluate(context.Background(), Options{Platform: "codex", Event: "stop", Project: root}, strings.NewReader(payload))
+	got := Evaluate(context.Background(), approvedStopOptions(t, root), strings.NewReader(payload))
 	if got.Status != "evaluation-error" || got.Output["decision"] != "block" {
 		t.Fatalf("timeout result = %#v", got)
 	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("approved check never started: %v", err)
+	}
+}
+
+func approvedStopOptions(t *testing.T, root string) Options {
+	t.Helper()
+	check, err := checks.Load(root, ".harnest/checks", "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := checks.Digest(root, []checks.Check{check})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Options{Platform: "codex", Event: "stop", Project: root, ChecksDigest: digest}
 }
 
 func TestHookCheckProcess(t *testing.T) {

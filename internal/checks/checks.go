@@ -29,6 +29,7 @@ type Check struct {
 	ID             string   `yaml:"id"`
 	Command        string   `yaml:"command"`
 	Args           []string `yaml:"args,omitempty"`
+	Sources        []string `yaml:"sources,omitempty"`
 	Approved       bool     `yaml:"approved"`
 	TimeoutSeconds int      `yaml:"timeout_seconds,omitempty"`
 }

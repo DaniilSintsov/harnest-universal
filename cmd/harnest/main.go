@@ -1026,9 +1026,10 @@ func runHook() {
 		os.Exit(1)
 	}
 	result := hooks.Evaluate(context.Background(), hooks.Options{
-		Platform: parseFlag("--platform", ""),
-		Event:    parseFlag("--event", ""),
-		Project:  parseFlag("--project", ""),
+		Platform:     parseFlag("--platform", ""),
+		Event:        parseFlag("--event", ""),
+		Project:      parseFlag("--project", ""),
+		ChecksDigest: parseFlag("--checks-digest", ""),
 	}, os.Stdin)
 	if err := json.NewEncoder(os.Stdout).Encode(result.Output); err != nil {
 		fmt.Fprintln(os.Stderr, "Harnest could not write native hook response")

@@ -64,13 +64,20 @@ func TestRunContextPreservesArgvCWDAndReplacesEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalDir, err := filepath.EvalSymlinks(dir)
+	actualDir, rest, ok := strings.Cut(string(data), "\n")
+	if !ok {
+		t.Fatalf("helper omitted working directory: %q", data)
+	}
+	wantInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := strings.Join([]string{canonicalDir, "a file.go", "one arg", "*.go"}, "\n")
-	if string(data) != want {
-		t.Fatalf("helper result = %q, want %q", data, want)
+	actualInfo, err := os.Stat(actualDir)
+	if err != nil || !os.SameFile(wantInfo, actualInfo) {
+		t.Fatalf("helper cwd = %q, want directory %q: %v", actualDir, dir, err)
+	}
+	if want := "a file.go\none arg\n*.go"; rest != want {
+		t.Fatalf("helper env/argv = %q, want %q", rest, want)
 	}
 }
 

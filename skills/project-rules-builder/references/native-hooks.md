@@ -36,6 +36,10 @@ Native handlers вызывают evaluator через stdin:
 harnest hook evaluate --platform <claude-code|codex> --event <pre-tool-use|stop> --project <absolute-root>
 ```
 
+Для Stop с `require-check` генератор добавляет `--checks-digest <sha256>` в native command. Digest закрепляет определения всех выбранных checks, project cwd, разрешённые пути и содержимое executable, файлов из отдельных `args` и списка `sources`. Stop сравнивает digest до запуска; отсутствующее или устаревшее значение даёт `evaluation-error`. Не обновляй digest вручную: после одобрения изменённой версии выполни generation и повторный native trust/reload.
+
+Файлы, переданные отдельными аргументами, считаются входными зависимостями: их изменение требует нового approval. Для косвенных зависимостей (например, script, вызываемый внутри `sh -c`, или импортируемый helper) перечисли пути явно в check YAML: `sources: [scripts/check.sh, scripts/helper.sh]`. Пути разрешаются от project cwd; отсутствующий explicit source блокирует генерацию и выполнение. Harnest не разбирает shell-код и дерево импортов.
+
 Используй только `pre-tool-use` и `stop`. Не добавляй `--allow`: native hook не должен обходить разрешения хоста. Для одного project/platform/event нужен один Harnest handler; повторная генерация не создаёт дубли и сохраняет чужие hooks.
 
 `protect-path` — безусловный запрет поддерживаемой операции. Формулировку «запрещено без разрешения» нельзя реализовать как portable per-operation approval в v1. Предложи пользователю либо безусловный запрет, либо штатный approval хоста. Выключение hooks не является разрешением одной операции.
@@ -49,7 +53,7 @@ Check запускается точными argv из project cwd. `timeout_seco
 ## Сопровождение bindings
 
 - Добавление/удаление ID меняет только `hooks.rules` и производный native wiring; rule/check файлы сохраняются.
-- Изменение executable, args или исходника check сбрасывает approval. Снова покажи точные argv, полный source, timeout, cwd и side effects до `approved: true`.
+- Изменение executable, args, timeout, `sources` или исходника check делает сохранённый digest недействительным даже при `approved: true`. Снова покажи точные argv, полный source, timeout, cwd и side effects; после явного одобрения запусти `generate --dry-run`, generation и native trust/reload.
 - Изменение scope или statement выбранного rule читается evaluator на следующем событии и не требует regeneration.
 - Изменение выбранных IDs, событий, executable path или native command требует `generate --dry-run`, затем regeneration.
 - Повторная генерация сохраняет чужие hooks и не создаёт дубли. Последний удалённый binding убирает только Harnest handlers.

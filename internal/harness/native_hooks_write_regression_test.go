@@ -77,22 +77,11 @@ func TestApplyHooksRollsBackOnLaterReadError(t *testing.T) {
 			if err := os.WriteFile(path, before, 0600); err != nil {
 				t.Fatal(err)
 			}
-			project := hookProject()
-			project.Targets = []string{"codex"}
-			plan, err := PlanHooks(root, project, "/usr/local/bin/harnest")
+			info, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var first HookArtifact
-			for _, artifact := range plan {
-				if artifact.Path == path {
-					first = artifact
-				}
-			}
-			if first.Path == "" {
-				t.Fatal("native config update missing")
-			}
-			first.Remove = remove
+			first := HookArtifact{Path: path, Before: before, Content: []byte("{}\n"), Mode: info.Mode().Perm(), Exists: true, Remove: remove}
 			second := filepath.Join(root, "second.json")
 			if err := os.Mkdir(second, 0700); err != nil {
 				t.Fatal(err)

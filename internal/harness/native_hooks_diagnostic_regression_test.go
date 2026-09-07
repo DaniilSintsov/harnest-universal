@@ -34,10 +34,9 @@ func TestInspectHooksRequiresExactEventsAndCompleteJSON(t *testing.T) {
 				}
 				project := hookProject()
 				project.PolicyRules[0].Severity = rules.Required
-				project.PolicyRules[0].Enforcement = []rules.Enforcement{{Type: "require-check", Check: "test"}}
 				hooks := map[string][]any{}
 				for _, event := range tc.events {
-					hooks[event] = append(hooks[event], nativeEntry(platform, event, root, "/usr/local/bin/harnest"))
+					hooks[event] = append(hooks[event], nativeEntry(platform, event, root, filepath.Join(root, "harnest"), ""))
 				}
 				data, err := json.Marshal(map[string]any{"hooks": hooks})
 				if err != nil {

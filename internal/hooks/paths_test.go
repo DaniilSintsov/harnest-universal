@@ -8,6 +8,17 @@ import (
 	"github.com/daniilsintsov/harnest-universal/internal/rules"
 )
 
+func TestCanonicalNewPathWithForwardSlashes(t *testing.T) {
+	root, err := canonical(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := canonical(filepath.ToSlash(root) + "/new/nested/file.go")
+	if want := filepath.Join(root, "new", "nested", "file.go"); err != nil || got != want {
+		t.Fatalf("canonical new path = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestNormalizeChangesRejectsEscapeAndKeepsSymlinkAlias(t *testing.T) {
 	root := t.TempDir()
 	root, err := canonical(root)

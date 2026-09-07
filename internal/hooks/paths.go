@@ -17,6 +17,7 @@ func inside(root, name string) bool {
 
 // canonical resolves the nearest existing parent, including for new files.
 func canonical(name string) (string, error) {
+	name = filepath.FromSlash(name)
 	resolved, err := filepath.EvalSymlinks(name)
 	if err == nil {
 		absolute, err := filepath.Abs(resolved)
@@ -238,7 +239,7 @@ func patchChanges(cwd, patch string) ([]rules.Change, error) {
 					for previous, written := range exists {
 						if written && strings.EqualFold(previous, key) {
 							if _, err := os.Lstat(previous); os.IsNotExist(err) {
-							// ponytail: new aliases lack identity; require one spelling until volume case detection is available.
+								// ponytail: new aliases lack identity; require one spelling until volume case detection is available.
 								return nil, fmt.Errorf("ambiguous new apply_patch path casing")
 							}
 						}

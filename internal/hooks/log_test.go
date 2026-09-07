@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,9 @@ func TestLogOpenRejectsFinalSymlinkAfterValidation(t *testing.T) {
 }
 
 func TestAppendLogConcurrentProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native hook log writes are unsupported on Windows")
+	}
 	root := t.TempDir()
 	const processes = 12
 	var wg sync.WaitGroup
@@ -92,6 +96,9 @@ func TestAppendLogProcessHelper(t *testing.T) {
 }
 
 func TestAppendLogRotatesOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native hook log writes are unsupported on Windows")
+	}
 	root := t.TempDir()
 	state := filepath.Join(root, ".harnest", "state")
 	if err := os.MkdirAll(state, 0o700); err != nil {
@@ -123,6 +130,9 @@ func TestAppendLogRotatesOnce(t *testing.T) {
 }
 
 func TestAppendLogExcludesPayloadAndSanitizesIDs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native hook log writes are unsupported on Windows")
+	}
 	root := t.TempDir()
 	event := Event{
 		ToolInput: []byte("{\"secret\":\"RAW-PAYLOAD-SECRET\"}"),

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,7 +27,18 @@ func TestDoctorSeparatesInstalledDisabledAndIncompleteHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harnestYaml.Generate(dir, cfg); err != nil {
+	_, err = harnestYaml.Generate(dir, cfg)
+	if runtime.GOOS == "windows" {
+		if err == nil || !strings.Contains(err.Error(), "not verified on Windows") {
+			t.Fatalf("unsupported native installation: %v", err)
+		}
+		report, err := Check(dir)
+		if err != nil || report.Healthy() {
+			t.Fatalf("unsupported hard enforcement advertised as healthy: %#v, %v", report, err)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	report, err := Check(dir)

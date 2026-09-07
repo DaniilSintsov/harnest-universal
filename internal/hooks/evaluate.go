@@ -22,9 +22,10 @@ import (
 const MaxInputBytes = 1 << 20
 
 type Options struct {
-	Platform string
-	Event    string
-	Project  string
+	Platform     string
+	Event        string
+	Project      string
+	ChecksDigest string
 }
 
 type Event struct {
@@ -238,14 +239,45 @@ func Evaluate(ctx context.Context, options Options, input io.Reader) (result Res
 		files = appendUnique(files, change.Path)
 	}
 	sort.Strings(files)
+	// Keep the definitions that were compared with the host-trusted command;
+	// do not reload mutable YAML between approval verification and execution.
+	var definitions []checks.Check
+	loaded := map[string]checks.Check{}
+	var approvalErr error
+	if len(checkIDs) > 0 {
+		for _, rule := range selected {
+			for _, enforcement := range rule.Enforcement {
+				if enforcement.Type != "require-check" {
+					continue
+				}
+				if _, ok := loaded[enforcement.Check]; ok {
+					continue
+				}
+				check, err := checks.Load(root, project.Checks.Root, enforcement.Check)
+				if err != nil {
+					approvalErr = err
+					continue
+				}
+				loaded[check.ID] = check
+				definitions = append(definitions, check)
+			}
+		}
+	}
 	for _, id := range checkIDs {
 		record := Record{Status: "passed", Reason: "approved check passed", RuleIDs: required[id], CheckID: id}
-		check, err := checks.Load(root, project.Checks.Root, id)
+		err := approvalErr
 		if err == nil {
-			err = checks.RunContext(ctx, root, check, files)
+			var digest string
+			digest, err = checks.Digest(root, definitions)
+			if err == nil && (options.ChecksDigest == "" || digest != options.ChecksDigest) {
+				err = fmt.Errorf("check approval changed")
+			}
+		}
+		if err == nil {
+			err = checks.RunContext(ctx, root, loaded[id], files)
 		}
 		if err != nil {
-			record.Status, record.Reason = "evaluation-error", "check could not complete; inspect definition, approval, executable and limits"
+			record.Status, record.Reason = "evaluation-error", "check could not complete; review definition, sources, approval and limits; regenerate and re-trust native hooks after approval"
 			if checks.IsFailure(err) {
 				record.Status, record.Reason = "violation", "check failed; run harnest verify --changed for check output and fix the reported rule"
 			}
