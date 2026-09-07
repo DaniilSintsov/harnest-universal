@@ -83,12 +83,16 @@ func Migrate(cfg *HarnestConfig) (*HarnestConfig, error) {
 
 // BuildIR resolves config and local overrides into adapter-neutral input.
 func BuildIR(dir string, cfg *HarnestConfig) (ir.Project, error) {
+	hooksEnabled := true
 	if LocalExists(dir) {
 		local, err := LoadLocal(dir)
 		if err != nil {
 			return ir.Project{}, err
 		}
 		cfg = Merge(cfg, local)
+		if local != nil && local.Hooks.Enabled != nil {
+			hooksEnabled = *local.Hooks.Enabled
+		}
 	}
 
 	upgraded, err := Migrate(cfg)
@@ -119,6 +123,7 @@ func BuildIR(dir string, cfg *HarnestConfig) (ir.Project, error) {
 		Rules:    ir.ResourceIndex{Root: upgraded.Rules.Root, Index: upgraded.Rules.Index},
 		Skills:   ir.ResourceIndex{Root: upgraded.Skills.Root, Index: upgraded.Skills.Index},
 		Checks:   ir.ResourceIndex{Root: upgraded.Checks.Root, Index: upgraded.Checks.Index},
+		Hooks:    ir.Hooks{Rules: append([]string(nil), upgraded.Hooks.Rules...), Enabled: hooksEnabled},
 		Targets:  append([]string(nil), upgraded.Harnesses...),
 		Language: upgraded.Settings.Language,
 		Workflow: ir.Workflow{
@@ -141,6 +146,9 @@ func BuildIR(dir string, cfg *HarnestConfig) (ir.Project, error) {
 	project.PolicyRules, err = rules.Load(dir, upgraded.Rules.Root)
 	if err != nil {
 		return ir.Project{}, fmt.Errorf("loading rules: %w", err)
+	}
+	if _, err := rules.SelectHooks(project.PolicyRules, project.Hooks.Rules); err != nil {
+		return ir.Project{}, fmt.Errorf("hooks.rules: %w", err)
 	}
 	return project, nil
 }

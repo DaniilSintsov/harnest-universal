@@ -75,8 +75,11 @@ func TestV1AdaptersExposeCapabilities(t *testing.T) {
 		if caps.Instructions != ir.Native || caps.Agents != ir.Native {
 			t.Fatalf("%s missing generated capabilities: %#v", name, caps)
 		}
-		if caps.PreToolHook == ir.Native || caps.PostToolHook == ir.Native || caps.Permissions == ir.Native || caps.Verification == ir.Native {
-			t.Fatalf("%s claims a native capability it does not generate: %#v", name, caps)
+		if caps.PreToolHook != ir.Native || caps.Verification != ir.Native {
+			t.Fatalf("%s missing native hook capabilities: %#v", name, caps)
+		}
+		if caps.PostToolHook == ir.Native || caps.Permissions == ir.Native {
+			t.Fatalf("%s claims an unsupported native capability: %#v", name, caps)
 		}
 	}
 }
