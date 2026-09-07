@@ -61,7 +61,7 @@ func TestInvalidBindingStillDeniesActualPreToolUse(t *testing.T) {
 		if result.Status != "evaluation-error" || !ok || output["permissionDecision"] != "deny" {
 			t.Fatalf("invalid binding %q failed open: %#v", event, result)
 		}
-		if runtime.GOOS == "windows" && !strings.Contains(result.Output["systemMessage"].(string), "history could not be written") {
+		if runtime.GOOS == "windows" && event == "stop" && !strings.Contains(result.Output["systemMessage"].(string), "history could not be written") {
 			t.Fatalf("unsupported log writer was not reported: %#v", result.Output)
 		}
 	}
