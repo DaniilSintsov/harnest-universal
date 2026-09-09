@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harnest Rules Builder"
+  short_description: "Build Harnest rules, checks and native hooks"
+  default_prompt: "Use $harnest-rules-builder to propose scoped Harnest rules and hooks for this repository."

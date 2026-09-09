@@ -12,7 +12,7 @@ func TestInstallBundledSkills(t *testing.T) {
 	if err := installBundledSkills(filepath.Join(dir, "skills")); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"harnest-bootstrap", "architecture-context-builder", "project-rules-builder", "compliance-review"} {
+	for _, name := range []string{"harnest-bootstrap", "architecture-context-builder", "project-rules-builder", "harnest-rules-builder", "compliance-review"} {
 		data, err := os.ReadFile(filepath.Join(dir, "skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatal(err)
@@ -24,9 +24,13 @@ func TestInstallBundledSkills(t *testing.T) {
 	for _, rel := range []string{
 		"architecture-context-builder/references/ecc/LICENSE",
 		"architecture-context-builder/references/ecc/SOURCES.md",
+		"project-rules-builder/references/native-hooks.md",
+		"project-rules-builder/references/codex.md",
+		"project-rules-builder/references/claude-code.md",
+		"harnest-rules-builder/references/native-hooks.md",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, "skills", rel)); err != nil {
-			t.Fatalf("missing installed third-party notice %s: %v", rel, err)
+			t.Fatalf("missing installed skill resource %s: %v", rel, err)
 		}
 	}
 }

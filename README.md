@@ -49,7 +49,7 @@ Portable agents из Harnest-source `.agents/agents/*.md` материализу
 
 Project skills имеют единый редактируемый source в `.agents/skills/<name>/SKILL.md`. Codex читает source напрямую. `harnest generate` зеркалирует каждый skill в `.claude/skills/<name>/` для Claude Code без symlink; target-каталоги помечаются как managed, пользовательские каталоги не перезаписываются. Global bundled skills ставятся в `<CLAUDE_CONFIG_DIR>/skills` для Claude Code и `~/.agents/skills` для Codex; `CODEX_HOME` не меняет официальный global skills path.
 
-`harnest generate --dry-run` валидирует targets и conflicts, показывает adapter outputs, portable agents, project skills и cleanup, но не пишет файлы.
+`harnest generate --dry-run` валидирует targets и conflicts, показывает adapter outputs, portable agents, project skills, native hook preview и cleanup, но не пишет файлы. Native hooks получают только rule ID из `hooks.rules`; локальный `hooks.enabled: false` в `.harnest-local.yaml` временно отключает evaluator, не удаляя wiring.
 
 ### Кастомный профиль для обеих платформ
 
@@ -158,8 +158,8 @@ Active rules лежат в `.harnest/rules/*.yaml`:
 
 ```yaml
 id: protect-production
-severity: required
-statement: Не изменять production-конфигурацию без явного разрешения.
+severity: hard
+statement: Агенту запрещено изменять production-конфигурацию.
 scope:
   paths: [deploy/**]
 enforcement:
@@ -173,7 +173,7 @@ Severity:
 - `required` — обязательное semantic требование;
 - `preference` — локальное предпочтение.
 
-`harnest doctor` возвращает ошибку, если hard rule нельзя обеспечить выбранным adapter. Claude Code и Codex сейчас имеют `verification=fallback`, поэтому instruction-driven `harnest verify --changed` не делает hard rule adapter-native. `deny-command` не поддерживается и отклоняется при validation для любой severity; доступны `protect-path` и `require-check`. Custom executable-check запускается без shell-интерпретации и только при `approved: true`; список изменённых файлов доступен ему в `HARNEST_CHANGED_FILES`, по одному пути на строку. `harnest learn` создаёт inactive candidate в `.harnest/rules/candidates/`; автоматической активации нет.
+`protect-path` задаёт безусловный запрет; переносимого разового approval для изменения защищённого пути в v1 нет. Требование «без разрешения» остаётся в штатном approval хоста либо согласуется с владельцем как безусловный запрет. `deny-command` не поддерживается. Custom executable-check запускается без shell-интерпретации и только при `approved: true`; до одобрения показываются точные argv, исходник и timeout. Native Stop дополнительно проверяет SHA-256 определения, executable и исходников против digest в доверенной native command. Изменение требует нового одобрения, generation и trust/reload; косвенные исходники перечисляются в `sources` check YAML. `harnest doctor` различает наличие config, local enablement, native trust/reload и подтверждённый host smoke: одно не доказывает другое. Обнаруженные локальные версии Claude Code 2.1.226 и Codex 0.146.0 пока не объявляются verified без реального smoke. На Windows native installation сейчас отклоняется как unverified.
 
 ## Команды
 
@@ -203,7 +203,8 @@ harnest convert --from claude-code --to claude-code|codex [dir]
 
 - `harnest-bootstrap`
 - `architecture-context-builder`
-- `project-rules-builder`
+- `project-rules-builder` — самостоятельные правила и hooks Codex/Claude Code без Harnest; провайдера выбирает пользователь.
+- `harnest-rules-builder` — Harnest-адаптер для того же анализа: scoped YAML rules/checks и bindings через `harnest generate`; используется в bootstrap.
 - `compliance-review`
 
 Installer также сохраняет включённые license/source notices для bundled reference materials.

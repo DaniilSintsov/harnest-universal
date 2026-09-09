@@ -11,6 +11,7 @@ type HarnestConfig struct {
 	Rules        ResourceBlock              `yaml:"rules,omitempty"`
 	Skills       ResourceBlock              `yaml:"skills,omitempty"`
 	Checks       ResourceBlock              `yaml:"checks,omitempty"`
+	Hooks        HooksBlock                 `yaml:"hooks,omitempty"`
 	Workflow     WorkflowBlock              `yaml:"workflow,omitempty"`
 	Agents       AgentsBlock                `yaml:"agents"`
 	Adapters     map[string]AdapterSettings `yaml:"adapters,omitempty"`
@@ -18,6 +19,10 @@ type HarnestConfig struct {
 	DesignSystem string                     `yaml:"design_system,omitempty"`
 	Profiles     ProfilesBlock              `yaml:"profiles,omitempty"`
 	Settings     SettingsBlock              `yaml:"settings,omitempty"`
+}
+
+type HooksBlock struct {
+	Rules []string `yaml:"rules,omitempty"`
 }
 
 // ProjectInfo holds optional human-readable metadata about the project.

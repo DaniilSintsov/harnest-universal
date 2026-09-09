@@ -1,4 +1,4 @@
 interface:
   display_name: "Project Rules Builder"
-  short_description: "Propose scoped enforceable project rules"
-  default_prompt: "Use $project-rules-builder to propose scoped Harnest rules for this repository."
+  short_description: "Build project rules and native hooks for coding agents"
+  default_prompt: "Use $project-rules-builder to choose Codex, Claude Code, or both and create scoped project rules and native hooks."

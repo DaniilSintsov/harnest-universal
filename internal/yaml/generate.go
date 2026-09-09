@@ -47,6 +47,10 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 	if err := validateAdapterOutputs(dir, project.Targets); err != nil {
 		return nil, err
 	}
+	hookArtifacts, err := harness.PlanHooks(dir, project, "")
+	if err != nil {
+		return nil, err
+	}
 	if _, err := projectSkills.Materialize(dir, project.Skills.Root, project.Targets, true); err != nil {
 		return nil, err
 	}
@@ -57,12 +61,12 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 	var generated []string
 	skillFiles, err := projectSkills.Materialize(dir, project.Skills.Root, project.Targets, false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("materializing skills (generation may be partial): %w", err)
 	}
 	generated = append(generated, skillFiles...)
 	portableFiles, err := agents.MaterializePortable(dir, project.Targets)
 	if err != nil {
-		return nil, err
+		return generated, partialGenerationError(generated, err)
 	}
 	generated = append(generated, portableFiles...)
 
@@ -73,19 +77,32 @@ func Generate(dir string, cfg *HarnestConfig) ([]string, error) {
 		targetProject.Agents = ResolveTargetAgents(project, harnessName)
 		outPath, err := gen.Generate(dir, targetProject)
 		if err != nil {
-			return generated, fmt.Errorf("generating %q: %w", harnessName, err)
+			return generated, partialGenerationError(generated, fmt.Errorf("generating %q: %w", harnessName, err))
 		}
 
 		generated = append(generated, outPath)
 	}
+	hookFiles, err := harness.ApplyHooks(hookArtifacts)
+	if err != nil {
+		return generated, partialGenerationError(generated, err)
+	}
+	generated = append(generated, hookFiles...)
 
 	return generated, nil
+}
+
+func partialGenerationError(paths []string, err error) error {
+	if len(paths) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w; partial generated state: %s", err, strings.Join(paths, ", "))
 }
 
 // DryRunResult contains adapter content and every project path generation would
 // create, update, or remove.
 type DryRunResult struct {
 	Adapters map[string]string
+	Native   map[string]string
 	Files    []string
 }
 
@@ -113,6 +130,10 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (DryRunResult, error) {
 	if err := validateAdapterOutputs(dir, project.Targets); err != nil {
 		return DryRunResult{}, err
 	}
+	hookArtifacts, err := harness.PlanHooks(dir, project, "")
+	if err != nil {
+		return DryRunResult{}, err
+	}
 	skillFiles, err := projectSkills.Materialize(dir, project.Skills.Root, project.Targets, true)
 	if err != nil {
 		return DryRunResult{}, err
@@ -128,9 +149,13 @@ func GenerateDryRun(dir string, cfg *HarnestConfig) (DryRunResult, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	results := DryRunResult{Adapters: make(map[string]string, len(project.Targets))}
+	results := DryRunResult{Adapters: make(map[string]string, len(project.Targets)), Native: make(map[string]string, len(hookArtifacts))}
 	results.Files = append(results.Files, skillFiles...)
 	results.Files = append(results.Files, agentFiles...)
+	for _, artifact := range hookArtifacts {
+		results.Native[artifact.Path] = string(artifact.Content)
+		results.Files = append(results.Files, artifact.Path)
+	}
 
 	for _, harnessName := range project.Targets {
 		gen, _ := harness.Get(harnessName)
@@ -271,6 +296,7 @@ func validateAdapterOutputs(dir string, targets []string) error {
 // .harnest-local.yaml is always included so personal overrides are never
 // accidentally committed, regardless of whether any other files were generated.
 func UpdateGitignore(dir string, files []string) (bool, error) {
+	files = excludeNativeLocalArtifacts(files)
 	// Always gitignore the local overrides file.
 	files = unionStrings(files, []string{localConfigFileName})
 
@@ -320,6 +346,7 @@ func UpdateGitignore(dir string, files []string) (bool, error) {
 // UpdateLocalExclude keeps Harnest-owned project files local without changing
 // the repository's tracked .gitignore.
 func UpdateLocalExclude(dir string, files []string) (bool, error) {
+	files = excludeNativeLocalArtifacts(files)
 	gitDir := filepath.Join(dir, ".git")
 	info, err := os.Stat(gitDir)
 	if err != nil {
@@ -363,6 +390,18 @@ func UpdateLocalExclude(dir string, files []string) (bool, error) {
 		filepath.Join(dir, ".reports", "architecture-context") + string(filepath.Separator),
 	})
 	return updateIgnoreFile(filepath.Join(gitDir, "info", "exclude"), dir, files, localExcludeMarker)
+}
+
+func excludeNativeLocalArtifacts(files []string) []string {
+	result := make([]string, 0, len(files))
+	for _, file := range files {
+		slash := filepath.ToSlash(file)
+		if strings.HasSuffix(slash, "/.claude/settings.local.json") || strings.HasSuffix(slash, "/.codex/hooks.json") || strings.Contains(slash, "/.harnest/state/") || strings.HasSuffix(slash, "/.git/info/exclude") || filepath.Base(file) == ".gitignore" {
+			continue
+		}
+		result = append(result, file)
+	}
+	return result
 }
 
 func updateIgnoreFile(path, dir string, files []string, marker string) (bool, error) {

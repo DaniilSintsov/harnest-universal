@@ -22,6 +22,11 @@ type LocalConfig struct {
 	Agents       AgentsBlock `yaml:"agents,omitempty"`
 	Harnesses    []string    `yaml:"harnesses,omitempty"`
 	DesignSystem string      `yaml:"design_system,omitempty"`
+	Hooks        LocalHooks  `yaml:"hooks,omitempty"`
+}
+
+type LocalHooks struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
 }
 
 // LoadLocal reads .harnest-local.yaml from dir. Returns nil, nil if not found.

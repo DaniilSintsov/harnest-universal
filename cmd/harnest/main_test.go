@@ -23,6 +23,29 @@ func TestParseDirArgDoesNotConsumeBooleanFlagValue(t *testing.T) {
 	}
 }
 
+func TestLocalHookSwitchRoundTrip(t *testing.T) {
+	userDir, project := t.TempDir(), t.TempDir()
+	for _, value := range []string{"false", "true"} {
+		if out, err := runMainCLI(t, userDir, project, "local", "set", "hooks.enabled", value); err != nil {
+			t.Fatalf("set %s: %v %s", value, err, out)
+		}
+		local, err := yamlconfig.LoadLocal(project)
+		if err != nil || local.Hooks.Enabled == nil || *local.Hooks.Enabled != (value == "true") {
+			t.Fatalf("local switch lost explicit %s: %#v, %v", value, local, err)
+		}
+	}
+	if out, err := runMainCLI(t, userDir, project, "local", "unset", "hooks.enabled"); err != nil {
+		t.Fatalf("unset: %v %s", err, out)
+	}
+	local, err := yamlconfig.LoadLocal(project)
+	if err != nil || local.Hooks.Enabled != nil {
+		t.Fatalf("unset retained switch: %#v, %v", local, err)
+	}
+	if _, err := runMainCLI(t, userDir, project, "local", "set", "hooks.enabled", "maybe"); err == nil {
+		t.Fatal("invalid hook switch accepted")
+	}
+}
+
 func TestForkVersionHasReleaseProvenance(t *testing.T) {
 	if !strings.Contains(version, "universal") {
 		t.Fatalf("fork version is indistinguishable from upstream: %s", version)

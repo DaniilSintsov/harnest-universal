@@ -14,7 +14,7 @@ description: "Глубоко настраивает Harnest для сущест�
 3. Запусти `architecture-context-builder`, если `docs/architecture/INDEX.md` отсутствует или устарел. Загружай только релевантные документы.
 4. Обнаружь роли отдельно для каждой целевой платформы. Общими считай только роли, исходник которых лежит в `.agents/agents/*.md`; Harnest materialize их в target-каталоги под реальным callable `name` без synthetic prefix. Не назначай Claude-only роль Codex и наоборот.
 5. Если роль назначена и доступна, обязательно используй её для соответствующего шага. Если недоступна, продолжай основным агентом и явно запиши fallback. Не имитируй изоляцию, когда она обязательна.
-6. Запусти `project-rules-builder`. Покажи кандидатов пользователю до активации. Никогда не создавай `hard` автоматически.
+6. Запусти `harnest-rules-builder`: он использует анализ `project-rules-builder`, а rules/checks и hooks оформляет через Harnest. Сохрани выбранные пользователем платформы; если выбора нет, спроси Codex, Claude Code или оба. Покажи кандидатов пользователю до активации. Никогда не создавай `hard` автоматически.
 7. Для custom executable-check потребуй явное одобрение и зафиксируй `approved: true`. Не генерируй произвольные shell hooks.
 8. Запусти `harnest generate`, затем `harnest doctor` и `harnest verify --changed`.
 9. Сообщи созданные artifacts, выбранные adapters/roles, одобренные rules, fallback-и и неизвестные факты.

@@ -3,6 +3,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -67,6 +68,10 @@ func TestCodexGeneratorUpdatesActiveFile(t *testing.T) {
 func TestV1AdaptersExposeCapabilities(t *testing.T) {
 	t.Parallel()
 
+	wantPreToolHook, wantVerification := ir.Native, ir.Native
+	if runtime.GOOS == "windows" {
+		wantPreToolHook, wantVerification = ir.Unsupported, ir.Fallback
+	}
 	for _, name := range []string{"claude-code", "codex"} {
 		caps, err := Capabilities(name)
 		if err != nil {
@@ -75,8 +80,11 @@ func TestV1AdaptersExposeCapabilities(t *testing.T) {
 		if caps.Instructions != ir.Native || caps.Agents != ir.Native {
 			t.Fatalf("%s missing generated capabilities: %#v", name, caps)
 		}
-		if caps.PreToolHook == ir.Native || caps.PostToolHook == ir.Native || caps.Permissions == ir.Native || caps.Verification == ir.Native {
-			t.Fatalf("%s claims a native capability it does not generate: %#v", name, caps)
+		if caps.PreToolHook != wantPreToolHook || caps.Verification != wantVerification {
+			t.Fatalf("%s hook capabilities on %s: %#v; want pre-tool=%s verification=%s", name, runtime.GOOS, caps, wantPreToolHook, wantVerification)
+		}
+		if caps.PostToolHook == ir.Native || caps.Permissions == ir.Native {
+			t.Fatalf("%s claims an unsupported native capability: %#v", name, caps)
 		}
 	}
 }

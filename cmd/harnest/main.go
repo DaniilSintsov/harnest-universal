@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	agents_pkg "github.com/daniilsintsov/harnest-universal/internal/agents"
@@ -16,6 +19,7 @@ import (
 	"github.com/daniilsintsov/harnest-universal/internal/doctor"
 	"github.com/daniilsintsov/harnest-universal/internal/drift"
 	"github.com/daniilsintsov/harnest-universal/internal/harness"
+	"github.com/daniilsintsov/harnest-universal/internal/hooks"
 	"github.com/daniilsintsov/harnest-universal/internal/install"
 	learn_pkg "github.com/daniilsintsov/harnest-universal/internal/learn"
 	"github.com/daniilsintsov/harnest-universal/internal/mapping"
@@ -57,6 +61,8 @@ func main() {
 		runMigrate()
 	case "doctor":
 		runDoctor()
+	case "hook":
+		runHook()
 	case "verify":
 		runVerify()
 	case "learn":
@@ -953,6 +959,14 @@ func runGenerate() {
 		for _, path := range preview.Files {
 			fmt.Printf("  %s\n", path)
 		}
+		nativePaths := make([]string, 0, len(preview.Native))
+		for path := range preview.Native {
+			nativePaths = append(nativePaths, path)
+		}
+		sort.Strings(nativePaths)
+		for _, path := range nativePaths {
+			fmt.Printf("\nNative config %s:\n%s\n", path, preview.Native[path])
+		}
 		fmt.Println("No files written. Remove --dry-run to generate.")
 		return
 	}
@@ -1005,6 +1019,23 @@ func runMigrate() {
 }
 
 // --- doctor ---
+
+func runHook() {
+	if len(os.Args) < 3 || os.Args[2] != "evaluate" {
+		fmt.Fprintln(os.Stderr, "usage: harnest hook evaluate --platform <claude-code|codex> --event <pre-tool-use|stop> --project <absolute-root>")
+		os.Exit(1)
+	}
+	result := hooks.Evaluate(context.Background(), hooks.Options{
+		Platform:     parseFlag("--platform", ""),
+		Event:        parseFlag("--event", ""),
+		Project:      parseFlag("--project", ""),
+		ChecksDigest: parseFlag("--checks-digest", ""),
+	}, os.Stdin)
+	if err := json.NewEncoder(os.Stdout).Encode(result.Output); err != nil {
+		fmt.Fprintln(os.Stderr, "Harnest could not write native hook response")
+		os.Exit(2)
+	}
+}
 
 func runDoctor() {
 	dir := parseDirArg(2)
@@ -1204,7 +1235,7 @@ func runLocal() {
 func runLocalSet(dir string) {
 	if len(os.Args) < 5 {
 		fmt.Fprintln(os.Stderr, "usage: harnest local set <key> <value>")
-		fmt.Fprintln(os.Stderr, "  keys: agents.consilium.<role>, agents.models.<role>, harnesses")
+		fmt.Fprintln(os.Stderr, "  keys: agents.consilium.<role>, agents.models.<role>, harnesses, hooks.enabled")
 		os.Exit(1)
 	}
 
@@ -1220,6 +1251,14 @@ func runLocalSet(dir string) {
 	parts := strings.SplitN(key, ".", 3)
 
 	switch {
+	case key == "hooks.enabled":
+		enabled, parseErr := strconv.ParseBool(value)
+		if parseErr != nil || (value != "true" && value != "false") {
+			fmt.Fprintln(os.Stderr, "hooks.enabled must be true or false")
+			os.Exit(1)
+		}
+		local.Hooks.Enabled = &enabled
+		fmt.Printf("Set hooks.enabled = %t\n", enabled)
 	case len(parts) == 3 && parts[0] == "agents" && parts[1] == "consilium":
 		role := parts[2]
 		if local.Agents.Consilium == nil {
@@ -1248,7 +1287,7 @@ func runLocalSet(dir string) {
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown key %q\n", key)
-		fmt.Fprintln(os.Stderr, "  supported: agents.consilium.<role>, agents.models.<role>, harnesses")
+		fmt.Fprintln(os.Stderr, "  supported: agents.consilium.<role>, agents.models.<role>, harnesses, hooks.enabled")
 		os.Exit(1)
 	}
 
@@ -1276,6 +1315,9 @@ func runLocalUnset(dir string) {
 	parts := strings.SplitN(key, ".", 3)
 
 	switch {
+	case key == "hooks.enabled":
+		local.Hooks.Enabled = nil
+		fmt.Println("Unset hooks.enabled; selected hooks enabled by default.")
 	case len(parts) == 3 && parts[0] == "agents" && parts[1] == "consilium":
 		role := parts[2]
 		delete(local.Agents.Consilium, role)
@@ -1446,6 +1488,7 @@ Usage:
   harnest generate [dir] [--dry-run]
   harnest migrate [dir]
   harnest doctor [dir]
+  harnest hook evaluate --platform <claude-code|codex> --event <pre-tool-use|stop> --project <absolute-root>
   harnest verify --changed [dir] [--base <ref>] [--allow <rule-id>]
   harnest learn [dir] --id <candidate-id> --statement <rule>
   harnest export [dir]
@@ -1465,6 +1508,7 @@ Commands:
   generate   Generate config files from harnest.yaml
   migrate    Upgrade harnest.yaml to current schema with backup
   doctor     Check adapter capabilities and hard-rule enforcement
+  hook       Evaluate a native command-hook event from stdin
   verify     Enforce applicable rules against changed files
   learn      Create an inactive rule candidate for review
   export     Export existing config to harnest.yaml
@@ -1478,6 +1522,7 @@ Local key paths (harnest local set/unset):
   agents.consilium.<role>  Override consilium agent for a role
   agents.models.<role>     Override model tier for a role (high|medium|low)
   harnesses                Add a harness to the local list
+  hooks.enabled            Emergency switch (true|false); unset restores enabled
 
 Flags:
   --harness          Target harness (%s)

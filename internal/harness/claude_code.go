@@ -3,6 +3,7 @@ package harness
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/daniilsintsov/harnest-universal/internal/ir"
@@ -12,15 +13,19 @@ import (
 type ClaudeCodeGenerator struct{}
 
 func (g *ClaudeCodeGenerator) Capabilities() ir.Capabilities {
+	preToolHook, verification := ir.Native, ir.Native
+	if runtime.GOOS == "windows" {
+		preToolHook, verification = ir.Unsupported, ir.Fallback
+	}
 	return ir.Capabilities{
 		Instructions: ir.Native,
 		ScopedRules:  ir.Fallback,
 		Skills:       ir.Native,
 		Agents:       ir.Native,
-		PreToolHook:  ir.Unsupported,
+		PreToolHook:  preToolHook,
 		PostToolHook: ir.Unsupported,
 		Permissions:  ir.Fallback,
-		Verification: ir.Fallback,
+		Verification: verification,
 	}
 }
 

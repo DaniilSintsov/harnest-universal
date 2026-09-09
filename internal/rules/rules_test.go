@@ -55,3 +55,36 @@ func TestValidateRejectsDenyCommandForEverySeverity(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchesChangeUsesSamePathAndOperation(t *testing.T) {
+	scope := Scope{Paths: []string{"src/**"}, Operations: []string{"update"}}
+	matched, err := MatchesChange(scope, []string{"src/protected/**"}, Change{Path: "src/protected/app.go", Operation: "update"})
+	if err != nil || !matched {
+		t.Fatalf("MatchesChange() = %v, %v", matched, err)
+	}
+	matched, err = MatchesChange(scope, []string{"config/**"}, Change{Path: "src/protected/app.go", Operation: "update"})
+	if err != nil || matched {
+		t.Fatalf("different enforcement path matched: %v, %v", matched, err)
+	}
+	matched, err = MatchesChange(scope, nil, Change{Path: "src/protected/app.go", Operation: "create"})
+	if err != nil || matched {
+		t.Fatalf("wrong operation matched: %v, %v", matched, err)
+	}
+}
+
+func TestSelectHooksRejectsInvalidSelection(t *testing.T) {
+	rule := Rule{ID: "semantic", Severity: Preference, Statement: "review", Enforcement: []Enforcement{{Type: "require-check", Check: "review"}}}
+	if _, err := SelectHooks([]Rule{rule}, []string{"semantic"}); err == nil {
+		t.Fatal("preference hook was accepted")
+	}
+	domainOnly := Rule{ID: "backend", Severity: Required, Statement: "test", Scope: Scope{Domains: []string{"backend"}}, Enforcement: []Enforcement{{Type: "require-check", Check: "test"}}}
+	if _, err := SelectHooks([]Rule{domainOnly}, []string{"backend"}); err == nil {
+		t.Fatal("domain-only hook was accepted")
+	}
+}
+
+func TestMatchPathsRejectsInvalidGlob(t *testing.T) {
+	if _, err := MatchPaths([]string{"src/["}, "src/app.go"); err == nil {
+		t.Fatal("invalid glob was accepted")
+	}
+}

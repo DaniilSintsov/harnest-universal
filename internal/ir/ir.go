@@ -18,10 +18,17 @@ type Project struct {
 	PolicyRules  []rules.Rule
 	Skills       ResourceIndex
 	Checks       ResourceIndex
+	Hooks        Hooks
 	Workflow     Workflow
 	Targets      []string
 	Language     string
 	Adapters     map[string]AdapterSettings
+}
+
+// Hooks is the explicitly selected native-hook policy, after local overrides.
+type Hooks struct {
+	Rules   []string
+	Enabled bool
 }
 
 type Architecture struct {
