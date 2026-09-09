@@ -203,7 +203,8 @@ harnest convert --from claude-code --to claude-code|codex [dir]
 
 - `harnest-bootstrap`
 - `architecture-context-builder`
-- `project-rules-builder`
+- `project-rules-builder` — самостоятельные правила и hooks Codex/Claude Code без Harnest; провайдера выбирает пользователь.
+- `harnest-rules-builder` — Harnest-адаптер для того же анализа: scoped YAML rules/checks и bindings через `harnest generate`; используется в bootstrap.
 - `compliance-review`
 
 Installer также сохраняет включённые license/source notices для bundled reference materials.
